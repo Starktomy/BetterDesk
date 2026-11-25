@@ -14,71 +14,88 @@ import (
 
 // relayHub multiplexes one mesh agent tunnel to multiple browser viewers (KVM p=2).
 type relayHub struct {
-	gateway   *Gateway
-	relayID   string
-	proto     string
-	mu        sync.Mutex
-	agent     *relayPeer
-	viewers   []*relayPeer
-	recorder  *relayRecorder
-	recPath   string
-	auditUser string
-	auditPeer string
+	gateway     *Gateway
+	relayID     string
+	proto       string
+	meta        *relayMeta
+	ready       chan struct{}
+	closed      chan struct{}
+	mu          sync.Mutex
+	agent       *relayPeer
+	viewers     []*relayPeer
+	recorder    *relayRecorder
+	recPath     string
+	auditUser   string
+	auditPeer   string
 	sessionType string
-	started   bool
-	done      atomic.Bool
+	started     bool
+	done        atomic.Bool
 }
 
-func (g *Gateway) runKvmRelayHub(ctx context.Context, relayID string, peer *relayPeer, proto string) {
+func (g *Gateway) runKvmRelayHub(ctx context.Context, relayID string, peer *relayPeer, proto string, meta *relayMeta) {
 	hub := &relayHub{
 		gateway: g,
 		relayID: relayID,
 		proto:   proto,
+		meta:    meta,
+		ready:   make(chan struct{}),
+		closed:  make(chan struct{}),
 	}
 	if v, loaded := g.relayHubs.LoadOrStore(relayID, hub); loaded {
 		hub = v.(*relayHub)
-	} else {
-		go hub.idleCleanup(ctx)
 	}
 
-	hub.attach(ctx, peer)
-	<-ctx.Done()
-	hub.detach(peer)
-}
-
-func (h *relayHub) idleCleanup(ctx context.Context) {
-	t := time.NewTimer(2 * time.Minute)
-	defer t.Stop()
+	viewerDone := make(chan struct{})
+	defer hub.detach(peer)
+	if !hub.attach(ctx, peer, viewerDone) {
+		return
+	}
+	timer := time.NewTimer(relayJoinMinutes * time.Minute)
+	defer timer.Stop()
 	select {
-	case <-t.C:
-		h.gateway.relayHubs.Delete(h.relayID)
-		h.gateway.relayMeta.Delete(h.relayID)
+	case <-hub.ready:
+		select {
+		case <-viewerDone:
+		case <-hub.closed:
+		case <-ctx.Done():
+		}
+	case <-viewerDone:
+	case <-hub.closed:
+	case <-timer.C:
 	case <-ctx.Done():
 	}
 }
 
-func (h *relayHub) attach(ctx context.Context, peer *relayPeer) {
+func (h *relayHub) attach(ctx context.Context, peer *relayPeer, viewerDone chan struct{}) bool {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.done.Load() || (!peer.browser && h.agent != nil) {
+		return false
+	}
 	if peer.browser {
 		h.viewers = append(h.viewers, peer)
 		sig := RelayConnectSignal(h.recorder != nil)
-		peer.ws.Write(ctx, websocket.MessageText, []byte(sig))
+		if err := writeRelayMessage(ctx, peer.ws, websocket.MessageText, []byte(sig)); err != nil {
+			h.viewers = h.viewers[:len(h.viewers)-1]
+			return false
+		}
 		if !h.started && h.agent != nil {
 			h.startPiping(ctx)
 		}
-		h.mu.Unlock()
-		go h.readViewer(ctx, peer)
-		return
+		go h.readViewer(ctx, peer, viewerDone)
+		return true
 	}
 	h.agent = peer
 	if !h.started && len(h.viewers) > 0 {
 		h.startPiping(ctx)
 	}
-	h.mu.Unlock()
+	return true
 }
 
 func (h *relayHub) detach(peer *relayPeer) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	agentLeft := h.agent == peer
 	if peer.browser {
 		for i, v := range h.viewers {
 			if v == peer {
@@ -86,13 +103,11 @@ func (h *relayHub) detach(peer *relayPeer) {
 				break
 			}
 		}
-	} else if h.agent == peer {
+	} else if agentLeft {
 		h.agent = nil
 	}
-	empty := h.agent == nil && len(h.viewers) == 0
-	h.mu.Unlock()
-	if empty {
-		h.finish()
+	if (h.agent == nil && len(h.viewers) == 0) || (h.started && (agentLeft || len(h.viewers) == 0)) {
+		h.finishLocked()
 	}
 }
 
@@ -101,8 +116,9 @@ func (h *relayHub) startPiping(ctx context.Context) {
 		return
 	}
 	h.started = true
+	close(h.ready)
 
-	meta := h.gateway.getRelayMeta(h.relayID)
+	meta := h.meta
 	recording := meta != nil && meta.Record
 	h.auditUser = h.relayID
 	h.auditPeer = h.relayID
@@ -131,10 +147,10 @@ func (h *relayHub) startPiping(ctx context.Context) {
 
 	sig := RelayConnectSignal(recording)
 	if h.agent != nil {
-		h.agent.ws.Write(ctx, websocket.MessageText, []byte(sig))
+		_ = writeRelayMessage(ctx, h.agent.ws, websocket.MessageText, []byte(sig))
 	}
 	for _, v := range h.viewers {
-		v.ws.Write(ctx, websocket.MessageText, []byte(sig))
+		_ = writeRelayMessage(ctx, v.ws, websocket.MessageText, []byte(sig))
 	}
 
 	if h.gateway.auditLog != nil {
@@ -146,41 +162,38 @@ func (h *relayHub) startPiping(ctx context.Context) {
 	}
 
 	if h.agent != nil {
-		go h.readAgent(ctx)
+		// Viewer disconnects do not end the single agent feed.
+		agentCtx := h.gateway.ctx
+		if agentCtx == nil {
+			agentCtx = context.WithoutCancel(ctx)
+		}
+		go h.readAgent(agentCtx, h.agent, h.recorder)
 	}
 }
 
-func (h *relayHub) readAgent(ctx context.Context) {
-	defer func() {
-		h.mu.Lock()
-		h.agent = nil
-		h.mu.Unlock()
-		h.finish()
-	}()
-	agent := h.agent
-	if agent == nil {
-		return
-	}
+func (h *relayHub) readAgent(ctx context.Context, agent *relayPeer, recorder *relayRecorder) {
+	defer h.finish()
 	for {
 		typ, data, err := agent.ws.Read(ctx)
 		if err != nil {
 			return
 		}
-		if h.recorder != nil && len(data) > 0 {
-			h.recorder.Write(int(typ), data)
+		if recorder != nil && len(data) > 0 {
+			recorder.Write(int(typ), data)
 		}
 		h.mu.Lock()
 		viewers := append([]*relayPeer{}, h.viewers...)
 		h.mu.Unlock()
 		for _, v := range viewers {
-			if err := v.ws.Write(ctx, typ, data); err != nil {
-				v.ws.Close(websocket.StatusGoingAway, "")
+			if err := writeRelayMessage(ctx, v.ws, typ, data); err != nil {
+				v.ws.CloseNow()
 			}
 		}
 	}
 }
 
-func (h *relayHub) readViewer(ctx context.Context, viewer *relayPeer) {
+func (h *relayHub) readViewer(ctx context.Context, viewer *relayPeer, done chan struct{}) {
+	defer close(done)
 	for {
 		typ, data, err := viewer.ws.Read(ctx)
 		if err != nil {
@@ -188,28 +201,36 @@ func (h *relayHub) readViewer(ctx context.Context, viewer *relayPeer) {
 		}
 		h.mu.Lock()
 		agent := h.agent
+		recorder := h.recorder
 		h.mu.Unlock()
 		if agent == nil {
 			continue
 		}
-		if h.recorder != nil && len(data) > 0 {
-			h.recorder.Write(int(typ), data)
+		if recorder != nil && len(data) > 0 {
+			recorder.Write(int(typ), data)
 		}
-		if err := agent.ws.Write(ctx, typ, data); err != nil {
+		if err := writeRelayMessage(ctx, agent.ws, typ, data); err != nil {
 			return
 		}
 	}
 }
 
 func (h *relayHub) finish() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.finishLocked()
+}
+
+func (h *relayHub) finishLocked() {
 	if h.done.Swap(true) {
 		return
 	}
+	close(h.closed)
 	if h.recorder != nil {
 		h.recorder.Close()
 	}
-	h.gateway.relayHubs.Delete(h.relayID)
-	h.gateway.relayMeta.Delete(h.relayID)
+	h.gateway.relayHubs.CompareAndDelete(h.relayID, h)
+	h.gateway.relayMeta.CompareAndDelete(h.relayID, h.meta)
 	if h.gateway.auditLog != nil {
 		fields := map[string]string{
 			"event": "mesh_session_end",
@@ -222,4 +243,10 @@ func (h *relayHub) finish() {
 		h.gateway.auditLog.Log(audit.ActionPeerUpdated, h.auditUser, h.auditPeer, fields)
 	}
 	log.Printf("[mesh] Relay hub %s ended", h.relayID)
+}
+
+func writeRelayMessage(ctx context.Context, conn *websocket.Conn, typ websocket.MessageType, data []byte) error {
+	writeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return conn.Write(writeCtx, typ, data)
 }

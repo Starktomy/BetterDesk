@@ -94,11 +94,14 @@ func pathWithinDir(dir, target string) bool {
 }
 
 func (r *relayRecorder) Write(messageType int, data []byte) {
-	if r == nil || r.file == nil || len(data) == 0 {
+	if r == nil || len(data) == 0 {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.file == nil {
+		return
+	}
 	// Simple container: ASCII line prefix + payload (BetterDesk raw capture, not MC-native mcrec).
 	header := []byte{byte('T'), byte(messageType), byte(len(data) >> 16), byte(len(data) >> 8), byte(len(data))}
 	r.file.Write(header)
@@ -106,11 +109,14 @@ func (r *relayRecorder) Write(messageType int, data []byte) {
 }
 
 func (r *relayRecorder) Close() {
-	if r == nil || r.file == nil {
+	if r == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.file == nil {
+		return
+	}
 	r.file.Close()
 	r.file = nil
 }

@@ -1,12 +1,83 @@
 package meshcentral
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+func TestMeshRelayForwardsBetweenAuthorizedParticipants(t *testing.T) {
+	for _, protocol := range []int{relayProtocolTerminal, relayProtocolKVM} {
+		t.Run(strconv.Itoa(protocol), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			codec, err := NewCookieCodec("authorized-test-session-cookie-secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			g := &Gateway{cookies: codec}
+			id := newRelayID()
+			g.setRelayMeta(id, &relayMeta{Protocol: protocol})
+			server := httptest.NewServer(http.HandlerFunc(g.handleRelayWS))
+			defer server.Close()
+
+			dial := func(browser bool) *websocket.Conn {
+				t.Helper()
+				ticket, err := codec.Encode(&RelayCookieData{RelayID: id, Protocol: protocol, Browser: browser}, relayJoinMinutes)
+				if err != nil {
+					t.Fatal(err)
+				}
+				query := url.Values{"id": {id}, "p": {strconv.Itoa(protocol)}}
+				if browser {
+					query.Set("browser", "1")
+					query.Set("auth", ticket)
+				} else {
+					query.Set("rauth", ticket)
+				}
+				conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"?"+query.Encode(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return conn
+			}
+
+			agent := dial(false)
+			defer agent.CloseNow()
+			browser := dial(true)
+			defer browser.CloseNow()
+			if _, _, err := agent.Read(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := agent.Write(ctx, websocket.MessageBinary, []byte("test frame")); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				messageType, data, err := browser.Read(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if messageType == websocket.MessageBinary {
+					if string(data) != "test frame" {
+						t.Fatalf("unexpected frame %q", data)
+					}
+					break
+				}
+			}
+			browser.CloseNow()
+			if _, _, err := agent.Read(ctx); err == nil || ctx.Err() != nil {
+				t.Fatalf("agent tunnel did not close promptly: %v", err)
+			}
+		})
+	}
+}
 
 func TestRelayIDPairing(t *testing.T) {
 	g := &Gateway{

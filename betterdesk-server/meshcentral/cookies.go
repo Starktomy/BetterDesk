@@ -18,6 +18,9 @@ type RelayCookieData struct {
 	UserID    string `json:"userid,omitempty"`
 	RUserID   string `json:"ruserid,omitempty"`
 	NodeID    string `json:"nodeid,omitempty"`
+	RelayID   string `json:"relay_id,omitempty"`
+	Protocol  int    `json:"protocol,omitempty"`
+	Browser   bool   `json:"browser,omitempty"`
 	Rights    uint32 `json:"r,omitempty"`
 	GuestName string `json:"gn,omitempty"`
 	ExpireMin int    `json:"expire,omitempty"`

@@ -220,19 +220,22 @@ func (g *Gateway) createRelayTunnel(peerID, userID, relayBase string, protocol i
 		rights = 0x00000002
 	}
 	authCookie, err := g.cookies.Encode(&RelayCookieData{
-		RUserID:   userID,
-		NodeID:    nodeID,
-		Rights:    rights,
-		ExpireMin: 240,
-	}, 240)
+		RUserID:  userID,
+		NodeID:   nodeID,
+		RelayID:  relayID,
+		Protocol: protocol,
+		Browser:  true,
+		Rights:   rights,
+	}, relayJoinMinutes)
 	if err != nil {
 		return "", "", err
 	}
 	rauthCookie, err := g.cookies.Encode(&RelayCookieData{
-		RUserID:   userID,
-		NodeID:    nodeID,
-		ExpireMin: 240,
-	}, 240)
+		RUserID:  userID,
+		NodeID:   nodeID,
+		RelayID:  relayID,
+		Protocol: protocol,
+	}, relayJoinMinutes)
 	if err != nil {
 		return "", "", err
 	}
@@ -240,13 +243,17 @@ func (g *Gateway) createRelayTunnel(peerID, userID, relayBase string, protocol i
 	browserPath := fmt.Sprintf("%smeshrelay.ashx?browser=1&p=%d&id=%s&nodeid=%s&auth=%s",
 		relayBase, protocol, relayID, nodeID, authCookie)
 
-	g.setRelayMeta(relayID, &relayMeta{
+	meta := &relayMeta{
 		PeerID:      peerID,
 		UserID:      userID,
 		SessionType: sessionType,
 		Protocol:    protocol,
 		Record:      record,
 		ViewOnly:    viewOnly,
+	}
+	g.setRelayMeta(relayID, meta)
+	time.AfterFunc(relayJoinMinutes*time.Minute, func() {
+		g.relayMeta.CompareAndDelete(relayID, meta)
 	})
 
 	if err := g.SendTunnel(peerID, tunnelPath, rights, viewOnly, tunnelOpts); err != nil {

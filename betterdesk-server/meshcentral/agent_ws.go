@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/unitronix/betterdesk-server/audit"
@@ -58,12 +59,12 @@ func (g *Gateway) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	ctx := r.Context()
-	if g.ctx != nil {
-		ctx = g.ctx
-	}
+	authCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	readCtx := authCtx
 
 	for {
-		typ, data, err := conn.Read(ctx)
+		typ, data, err := conn.Read(readCtx)
 		if err != nil {
 			return
 		}
@@ -77,9 +78,13 @@ func (g *Gateway) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 			ac.handleJSON(ctx, data)
 			continue
 		}
-		if err := ac.handleBinary(ctx, data); err != nil {
+		if err := ac.handleBinary(readCtx, data); err != nil {
 			log.Printf("[mesh] agent binary error from %s: %v", ac.clientIP, err)
 			return
+		}
+		if ac.authenticated && readCtx == authCtx {
+			cancel()
+			readCtx = ctx
 		}
 	}
 }

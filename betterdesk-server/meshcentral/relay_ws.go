@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,19 +14,20 @@ import (
 	"github.com/unitronix/betterdesk-server/audit"
 )
 
+const relayJoinMinutes = 2
+
 type relayPeer struct {
-	ws            *websocket.Conn
-	authenticated bool
-	userID        string
-	browser       bool
+	ws      *websocket.Conn
+	userID  string
+	browser bool
 }
 
 type relaySession struct {
-	id     string
-	peer1  *relayPeer
-	state  int // 0 waiting, 1 paired, 2 piping
-	mu     sync.Mutex
-	cancel context.CancelFunc
+	id    string
+	peer1 *relayPeer
+	state int // 0 waiting, 1 paired, 2 closed
+	mu    sync.Mutex
+	done  chan struct{}
 }
 
 func (g *Gateway) handleRelayWS(w http.ResponseWriter, r *http.Request) {
@@ -39,103 +41,89 @@ func (g *Gateway) handleRelayWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var cookieData *RelayCookieData
-	if auth := q.Get("auth"); auth != "" {
-		cd, err := g.cookies.Decode(auth, 240)
-		if err != nil {
-			http.Error(w, "invalid auth", http.StatusForbidden)
-			return
-		}
-		cookieData = cd
+	browser := q.Get("browser") == "1"
+	token := q.Get("rauth")
+	if browser {
+		token = q.Get("auth")
 	}
-	if rauth := q.Get("rauth"); rauth != "" {
-		cd, err := g.cookies.Decode(rauth, 240)
-		if err != nil {
-			http.Error(w, "invalid rauth", http.StatusForbidden)
-			return
-		}
-		cookieData = cd
+	meta := g.getRelayMeta(relayID)
+	if meta == nil || token == "" || q.Get("p") != strconv.Itoa(meta.Protocol) {
+		http.Error(w, "invalid relay authorization", http.StatusForbidden)
+		return
+	}
+	cookie, err := g.cookies.Decode(token, relayJoinMinutes)
+	if err != nil || cookie.RelayID != relayID || cookie.Protocol != meta.Protocol || cookie.Browser != browser {
+		http.Error(w, "invalid relay authorization", http.StatusForbidden)
+		return
 	}
 
 	conn, err := websocket.Accept(w, r, g.webSocketAcceptOptions())
 	if err != nil {
 		return
 	}
+	defer conn.CloseNow()
 	conn.SetReadLimit(32 * 1024 * 1024)
 
-	isBrowser := q.Get("browser") == "1"
-	peer := &relayPeer{
-		ws:            conn,
-		authenticated: cookieData != nil,
-		browser:       isBrowser,
-	}
-	if cookieData != nil && cookieData.RUserID != "" {
-		peer.userID = cookieData.RUserID
-	}
-
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	if g.ctx != nil {
-		ctx2, c2 := context.WithCancel(g.ctx)
-		defer c2()
-		go func() {
-			select {
-			case <-g.ctx.Done():
-				cancel()
-			case <-ctx.Done():
-				c2()
-			}
-		}()
-		ctx = ctx2
-	}
-
-	g.pairRelay(ctx, relayID, peer, q.Get("p"))
+	peer := &relayPeer{ws: conn, userID: cookie.RUserID, browser: browser}
+	g.pairRelay(r.Context(), relayID, peer, q.Get("p"), meta)
 }
 
 func isKvmRelayProto(proto string) bool {
 	return proto == "2"
 }
 
-func (g *Gateway) pairRelay(ctx context.Context, relayID string, peer *relayPeer, proto string) {
+func (g *Gateway) pairRelay(ctx context.Context, relayID string, peer *relayPeer, proto string, meta *relayMeta) {
 	if isKvmRelayProto(proto) {
-		g.runKvmRelayHub(ctx, relayID, peer, proto)
+		g.runKvmRelayHub(ctx, relayID, peer, proto, meta)
 		return
 	}
-	var session *relaySession
-	if v, loaded := g.relays.LoadOrStore(relayID, &relaySession{id: relayID}); loaded {
-		session = v.(*relaySession)
-	} else {
-		session = v.(*relaySession)
-		go func() {
-			t := time.NewTimer(2 * time.Minute)
-			defer t.Stop()
-			select {
-			case <-t.C:
-				g.relays.Delete(relayID)
-				g.relayMeta.Delete(relayID)
-			case <-ctx.Done():
-			}
-		}()
-	}
+	entry, _ := g.relays.LoadOrStore(relayID, &relaySession{id: relayID, done: make(chan struct{})})
+	session := entry.(*relaySession)
 
 	session.mu.Lock()
 	if session.peer1 == nil {
 		session.peer1 = peer
 		session.mu.Unlock()
-		<-ctx.Done()
-		peer.ws.Close(websocket.StatusNormalClosure, "")
+		timer := time.NewTimer(relayJoinMinutes * time.Minute)
+		defer timer.Stop()
+		select {
+		case <-session.done:
+		case <-ctx.Done():
+		case <-timer.C:
+			session.mu.Lock()
+			paired := session.state == 1
+			if !paired {
+				session.state = 2
+				g.relays.CompareAndDelete(relayID, session)
+			}
+			session.mu.Unlock()
+			if paired {
+				select {
+				case <-session.done:
+				case <-ctx.Done():
+				}
+			}
+		}
+		g.relays.CompareAndDelete(relayID, session)
+		return
+	}
+	if session.state != 0 || session.peer1.browser == peer.browser {
+		session.mu.Unlock()
 		return
 	}
 	peer2 := peer
 	peer1 := session.peer1
 	session.state = 1
 	session.mu.Unlock()
+	defer close(session.done)
 
-	meta := g.getRelayMeta(relayID)
-	recording := meta != nil && meta.Record
+	recording := meta.Record
 	sig := RelayConnectSignal(recording)
-	peer1.ws.Write(ctx, websocket.MessageText, []byte(sig))
-	peer2.ws.Write(ctx, websocket.MessageText, []byte(sig))
+	if writeRelayMessage(ctx, peer1.ws, websocket.MessageText, []byte(sig)) != nil ||
+		writeRelayMessage(ctx, peer2.ws, websocket.MessageText, []byte(sig)) != nil {
+		g.relayMeta.CompareAndDelete(relayID, meta)
+		return
+	}
 
 	auditUser := peer1.userID
 	auditPeer := relayID
@@ -176,8 +164,7 @@ func (g *Gateway) pairRelay(ctx context.Context, relayID string, peer *relayPeer
 	if recorder != nil {
 		recorder.Close()
 	}
-	g.relays.Delete(relayID)
-	g.relayMeta.Delete(relayID)
+	g.relayMeta.CompareAndDelete(relayID, meta)
 
 	if g.auditLog != nil {
 		fields := map[string]string{
@@ -194,9 +181,12 @@ func (g *Gateway) pairRelay(ctx context.Context, relayID string, peer *relayPeer
 }
 
 func pipeRelay(ctx context.Context, a, b *websocket.Conn, recorder *relayRecorder) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var wg sync.WaitGroup
 	copyWS := func(dst, src *websocket.Conn) {
 		defer wg.Done()
+		defer cancel()
 		for {
 			typ, data, err := src.Read(ctx)
 			if err != nil {
@@ -205,7 +195,7 @@ func pipeRelay(ctx context.Context, a, b *websocket.Conn, recorder *relayRecorde
 			if recorder != nil && len(data) > 0 {
 				recorder.Write(int(typ), data)
 			}
-			if err := dst.Write(ctx, typ, data); err != nil {
+			if err := writeRelayMessage(ctx, dst, typ, data); err != nil {
 				return
 			}
 		}
@@ -214,8 +204,8 @@ func pipeRelay(ctx context.Context, a, b *websocket.Conn, recorder *relayRecorde
 	go copyWS(b, a)
 	go copyWS(a, b)
 	wg.Wait()
-	a.Close(websocket.StatusNormalClosure, "")
-	b.Close(websocket.StatusNormalClosure, "")
+	a.CloseNow()
+	b.CloseNow()
 }
 
 // KVMRelay handles opaque MNG_KVM binary relay (protocol p=2).
