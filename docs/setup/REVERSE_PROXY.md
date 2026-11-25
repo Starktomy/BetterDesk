@@ -151,6 +151,8 @@ sudo systemctl restart betterdesk-console betterdesk-server
 
 The Go REST API uses `X-Forwarded-For` for rate limits only when proxy trust is enabled. The Go **signal WebSocket** (`/ws/id` on port `21118`) also uses `X-Real-IP` / `X-Forwarded-For` for client session keys when trust is enabled — required for RustDesk WebSocket Mode behind Nginx/Caddy ([#276](https://github.com/UNITRONIX/BetterDesk/issues/276)).
 
+Proxies append to `X-Forwarded-For`, so its left part is whatever the client sent. The Go server and the console read it from the right, skip addresses in `TRUSTED_PROXIES`, and use the first address that is not a trusted proxy. `X-Real-IP` is used only when there is no `X-Forwarded-For`. List every proxy in the chain in `TRUSTED_PROXIES`.
+
 Set **`TRUST_PROXY=Y`** and **`TRUSTED_PROXIES`** to the reverse proxy’s address(es) as CIDR or bare IP.
 
 Same-host Nginx/Caddy (typical):

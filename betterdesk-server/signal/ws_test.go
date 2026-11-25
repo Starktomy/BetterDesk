@@ -442,13 +442,15 @@ func TestWSEffectiveRemoteAddr(t *testing.T) {
 			want:           "203.0.113.10:50123",
 		},
 		{
-			name:           "x-real-ip preferred over xff",
+			// Caddy and HAProxy append X-Forwarded-For but pass a client-sent
+			// X-Real-IP through unchanged, so X-Forwarded-For decides.
+			name:           "xff preferred over x-real-ip",
 			trustProxy:     true,
 			trustedProxies: []*net.IPNet{loopbackNet},
 			remoteAddr:     "10.0.0.10:48438",
 			xri:            "203.0.113.99",
 			xff:            "198.51.100.1",
-			want:           "203.0.113.99:48438",
+			want:           "198.51.100.1:48438",
 		},
 		{
 			name:           "xff with port is not double-wrapped",

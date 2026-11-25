@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -161,8 +160,8 @@ func (s *Server) handleWSRelayUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 // wsEffectiveRemoteAddr returns the client address for WS relay registration.
-// When TrustProxy is enabled and the direct peer is in TRUSTED_PROXIES, prefer
-// X-Real-IP then the first X-Forwarded-For hop. 
+// When TrustProxy is enabled and the direct peer is in TRUSTED_PROXIES, use
+// the client the trusted proxies reported (config.ForwardedClient).
 func wsEffectiveRemoteAddr(r *http.Request, cfg *config.Config) string {
 	if r == nil {
 		return ""
@@ -170,13 +169,8 @@ func wsEffectiveRemoteAddr(r *http.Request, cfg *config.Config) string {
 	if cfg == nil || !cfg.ShouldHonorForwardedHeaders(r.RemoteAddr) {
 		return r.RemoteAddr
 	}
-	fwd := strings.TrimSpace(r.Header.Get("X-Real-IP"))
-	if fwd == "" {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			fwd = strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
-		}
-	}
-	if fwd == "" {
+	fwd, ok := cfg.ForwardedClient(r)
+	if !ok {
 		return r.RemoteAddr
 	}
 	return joinForwardedClientAddr(fwd, r.RemoteAddr)

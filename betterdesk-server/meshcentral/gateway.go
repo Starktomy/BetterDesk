@@ -206,45 +206,5 @@ func (g *Gateway) allowIP(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func clientIP(r *http.Request, cfg *config.Config) string {
-	ip := r.RemoteAddr
-	if idx := lastIndexByte(ip, ':'); idx > 0 {
-		ip = ip[:idx]
-	}
-	if cfg != nil && cfg.ShouldHonorForwardedHeaders(r.RemoteAddr) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := indexByte(xff, ','); i > 0 {
-				return trimSpace(xff[:i])
-			}
-			return trimSpace(xff)
-		}
-	}
-	return ip
-}
-
-func lastIndexByte(s string, c byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
-}
-
-func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
-}
-
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
+	return cfg.ClientIP(r)
 }

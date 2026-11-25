@@ -41,10 +41,12 @@ func TestClientIPHonorsTrustedProxy(t *testing.T) {
 		t.Fatalf("clientIP = %q, want X-Real-IP from the trusted proxy", got)
 	}
 
+	// nginx $proxy_add_x_forwarded_for appends the address it saw after
+	// whatever the client sent, so the left part is the client's to choose.
 	req.Header.Set("X-Real-IP", "not-an-ip")
-	req.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.1")
+	req.Header.Set("X-Forwarded-For", "6.6.6.6, 203.0.113.9")
 	if got := gateway.clientIP(req); got != "203.0.113.9" {
-		t.Fatalf("clientIP = %q, want the first X-Forwarded-For hop", got)
+		t.Fatalf("clientIP = %q, want the hop the trusted proxy added", got)
 	}
 
 	req.Header.Set("X-Forwarded-For", "garbage")

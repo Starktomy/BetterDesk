@@ -1943,42 +1943,7 @@ func writeInternalError(w http.ResponseWriter, err error, action string) {
 // When TrustProxy is enabled and the direct peer is in TRUSTED_PROXIES,
 // respects X-Forwarded-For and X-Real-IP headers. Otherwise uses RemoteAddr.
 func (s *Server) remoteIP(r *http.Request) string {
-	if s.cfg != nil && s.cfg.ShouldHonorForwardedHeaders(r.RemoteAddr) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			// Use the first (leftmost) IP — the original client
-			client := strings.TrimSpace(xff)
-			if idx := strings.Index(client, ","); idx != -1 {
-				client = strings.TrimSpace(client[:idx])
-			}
-			// Strip optional :port and reject non-IP / port 0.
-			if host, port, err := net.SplitHostPort(client); err == nil {
-				if port != "0" {
-					if ip := net.ParseIP(host); ip != nil {
-						return ip.String()
-					}
-				}
-			} else if ip := net.ParseIP(client); ip != nil {
-				return ip.String()
-			}
-		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			client := strings.TrimSpace(xri)
-			if host, port, err := net.SplitHostPort(client); err == nil {
-				if port != "0" {
-					if ip := net.ParseIP(host); ip != nil {
-						return ip.String()
-					}
-				}
-			} else if ip := net.ParseIP(client); ip != nil {
-				return ip.String()
-			}
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return s.cfg.ClientIP(r)
 }
 
 // --- Tags Handlers ---

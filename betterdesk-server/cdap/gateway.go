@@ -12,7 +12,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -644,21 +643,5 @@ func (g *Gateway) GetDeviceConn(deviceID string) *DeviceConn {
 // audit log. Forwarded headers are client-controlled, so they are honored only
 // when the direct peer is a configured trusted proxy.
 func (g *Gateway) clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if g.cfg == nil || !g.cfg.ShouldHonorForwardedHeaders(r.RemoteAddr) {
-		return host
-	}
-	if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
-		return ip.String()
-	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		first, _, _ := strings.Cut(xff, ",")
-		if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
-			return ip.String()
-		}
-	}
-	return host
+	return g.cfg.ClientIP(r)
 }

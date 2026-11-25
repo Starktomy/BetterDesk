@@ -2,6 +2,8 @@ package config
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -92,4 +94,41 @@ func mustParseCIDR(t *testing.T, cidr string) *net.IPNet {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestClientIPTakesTheHopTheTrustedProxyAdded(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		TrustProxy:     true,
+		TrustedProxies: []*net.IPNet{mustParseCIDR(t, "10.0.0.0/8")},
+	}
+	cases := []struct {
+		name, remote, xff, realIP, want string
+	}{
+		{"untrusted peer ignores headers", "203.0.113.1:443", "6.6.6.6", "7.7.7.7", "203.0.113.1"},
+		{"nginx appends the real client", "10.0.0.2:5000", "6.6.6.6, 198.51.100.4", "198.51.100.4", "198.51.100.4"},
+		{"chained trusted proxies are skipped", "10.0.0.2:5000", "6.6.6.6, 198.51.100.4, 10.0.0.9", "", "198.51.100.4"},
+		{"repeated headers keep their order", "10.0.0.2:5000", "", "", "198.51.100.5"},
+		{"X-Real-IP only without X-Forwarded-For", "10.0.0.2:5000", "", "198.51.100.6", "198.51.100.6"},
+		{"hop with a port", "10.0.0.2:5000", "198.51.100.7:4321", "", "198.51.100.7"},
+		{"malformed hop falls back to the peer", "10.0.0.2:5000", "1.2.3.4, garbage", "", "10.0.0.2"},
+		{"all hops trusted keeps the leftmost", "10.0.0.2:5000", "10.0.0.3, 10.0.0.4", "", "10.0.0.3"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = tc.remote
+		if tc.xff != "" {
+			req.Header.Set("X-Forwarded-For", tc.xff)
+		}
+		if tc.name == "repeated headers keep their order" {
+			req.Header.Add("X-Forwarded-For", "6.6.6.6")
+			req.Header.Add("X-Forwarded-For", "198.51.100.5")
+		}
+		if tc.realIP != "" {
+			req.Header.Set("X-Real-IP", tc.realIP)
+		}
+		if got := cfg.ClientIP(req); got != tc.want {
+			t.Errorf("%s: ClientIP = %q, want %q", tc.name, got, tc.want)
+		}
+	}
 }

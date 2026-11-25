@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"strings"
 )
 
@@ -52,8 +53,11 @@ func (c *Config) RemoteAddrIsTrustedProxy(remoteAddr string) bool {
 	if err != nil {
 		host = remoteAddr
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
+	return c.ipIsTrustedProxy(net.ParseIP(host))
+}
+
+func (c *Config) ipIsTrustedProxy(ip net.IP) bool {
+	if c == nil || ip == nil {
 		return false
 	}
 	for _, n := range c.TrustedProxies {
@@ -92,4 +96,63 @@ func (c *Config) WarnProxyTrustMisconfig() {
 	if len(c.TrustedProxies) == 0 {
 		log.Printf("[config] TRUST_PROXY=Y but TRUSTED_PROXIES is empty — X-Forwarded-For/X-Real-IP headers will be IGNORED. Set TRUSTED_PROXIES to your reverse proxy CIDR(s), e.g. 127.0.0.1/32,10.0.0.0/8 (#276)")
 	}
+}
+
+// ForwardedClient returns the client address reported by trusted proxies, as
+// the raw header value (it may carry a port), or false when forwarded headers
+// do not apply.
+//
+// Proxies append to X-Forwarded-For, so its left part is whatever the client
+// sent. Walk it from the right past further trusted proxies and take the
+// first untrusted hop: the address the outermost trusted proxy saw. This is
+// the proxy-addr rule the console uses. X-Real-IP is used only without
+// X-Forwarded-For.
+func (c *Config) ForwardedClient(r *http.Request) (string, bool) {
+	if r == nil || !c.ShouldHonorForwardedHeaders(r.RemoteAddr) {
+		return "", false
+	}
+	var hops []string
+	for _, value := range r.Header.Values("X-Forwarded-For") {
+		for _, part := range strings.Split(value, ",") {
+			if hop := strings.TrimSpace(part); hop != "" {
+				hops = append(hops, hop)
+			}
+		}
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		ip := forwardedHopIP(hops[i])
+		if ip == nil {
+			return "", false
+		}
+		if i == 0 || !c.ipIsTrustedProxy(ip) {
+			return hops[i], true
+		}
+	}
+	if len(hops) == 0 {
+		if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); forwardedHopIP(xri) != nil {
+			return xri, true
+		}
+	}
+	return "", false
+}
+
+// ClientIP returns the client IP for rate limits, blocklists and audit
+// records: the forwarded client when a trusted proxy reported one, otherwise
+// the direct peer.
+func (c *Config) ClientIP(r *http.Request) string {
+	if value, ok := c.ForwardedClient(r); ok {
+		return forwardedHopIP(value).String()
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func forwardedHopIP(hop string) net.IP {
+	if host, _, err := net.SplitHostPort(hop); err == nil {
+		hop = host
+	}
+	return net.ParseIP(strings.Trim(hop, "[]"))
 }
