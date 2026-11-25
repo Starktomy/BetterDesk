@@ -40,6 +40,13 @@ async function goApiProxy(req, res, method, path, body) {
 }
 
 /** Expose only expected client-facing errors; keep unexpected 500s generic. */
+// The acting administrator keeps the session they are using when they change
+// their own account; every other session of the user ends.
+function endUserSessions(req, userId) {
+    const exceptSid = Number(userId) === Number(req.session?.userId) ? req.sessionID : '';
+    return authService.revokeUserSessionsAndTokens(userId, { exceptSid });
+}
+
 function clientErrorMessage(err, req) {
     if (err.status === 400) return err.message;
     if (err.code === 'PEER_GRANTS_UNAVAILABLE' || err.code === 'STRATEGY_ASSIGNMENT_UNAVAILABLE') {
@@ -631,9 +638,7 @@ router.patch('/api/users/:id', requireAuth, requirePermission('user.edit'), asyn
                 req.ip
             );
             // Every credential minted under the old name must stop working.
-            try {
-                await authService.revokeUserSessionsAndTokens?.(userId);
-            } catch (_) { /* best effort; the Go side is authoritative */ }
+            await endUserSessions(req, userId);
             runBestEffortUserSync(() => userSync.mirrorUpdate(nextUsername, {}));
             user.username = nextUsername;
         }
@@ -689,7 +694,13 @@ router.patch('/api/users/:id', requireAuth, requirePermission('user.edit'), asyn
             const normalizedEmail = normalizeUserEmail(email);
             await db.updateUserProfile(userId, { email: normalizedEmail });
         }
-        
+
+        // Sessions keep the role they were created with, so a new role or
+        // password only takes effect once the old sessions are gone.
+        if ((role && role !== user.role) || password) {
+            await endUserSessions(req, userId);
+        }
+
         // Log action
         await db.logAction(req.session.userId, 'user_updated', `Updated user: ${user.username}`, req.ip);
 
@@ -808,6 +819,9 @@ router.delete('/api/users/:id', requireAuth, requirePermission('user.delete'), a
 
         await panelAccessPolicyService.savePolicy('user', String(userId), {});
         await db.deleteUser(userId);
+        // requireAuth does not look the user up again, so a deleted account's
+        // sessions would keep working with its old role.
+        await endUserSessions(req, userId);
 
         // Log action
         await db.logAction(req.session.userId, 'user_deleted', `Deleted user: ${user.username}`, req.ip);
@@ -859,6 +873,7 @@ router.post('/api/users/:id/reset-password', requireAuth, requirePermission('use
         
         const passwordHash = await authService.hashPassword(newPassword);
         await db.updateUserPassword(userId, passwordHash);
+        await endUserSessions(req, userId);
 
         // Mirror password reset to Go (Issue #125)
         runBestEffortUserSync(() => userSync.mirrorUpdate(user.username, { password: newPassword }));

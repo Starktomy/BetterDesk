@@ -46,7 +46,9 @@ jest.mock('../services/betterdeskApi', () => ({ apiClient: mockApiClient }));
 jest.mock('../services/authService', () => ({
     validatePasswordStrength: jest.fn(() => ({ strength: 'strong', feedback: [] })),
     hashPassword: jest.fn().mockResolvedValue('hashed'),
+    revokeUserSessionsAndTokens: jest.fn().mockResolvedValue(0),
 }));
+const mockAuthService = require('../services/authService');
 jest.mock('../middleware/rateLimiter', () => ({
     passwordChangeLimiter: (_req, _res, next) => next(),
 }));
@@ -306,6 +308,21 @@ describe('Users Routes', () => {
         expect(res.status).toBe(200);
         expect(mockDb.updateUserRole).toHaveBeenCalledWith(12, 'admin');
         expect(mockUserSync.mirrorUpdate).toHaveBeenCalledWith('oidc-user', { role: 'admin' });
+        // Sessions hold the old role, so they must end for the change to apply.
+        expect(mockAuthService.revokeUserSessionsAndTokens).toHaveBeenCalledWith(12, { exceptSid: '' });
+    });
+
+    it('keeps sessions when PATCH repeats the current role', async () => {
+        mockDb.getUserById.mockResolvedValue({ id: 12, username: 'operator1', role: 'operator' });
+
+        const app = createTestApp();
+        withAuth(app, { id: 1, username: 'admin', role: 'super_admin' });
+        app.use(usersRoutes);
+
+        const res = await request(app).patch('/api/users/12').send({ role: 'operator' });
+
+        expect(res.status).toBe(200);
+        expect(mockAuthService.revokeUserSessionsAndTokens).not.toHaveBeenCalled();
     });
 
     it('returns 500 when peer grant setter is unavailable (no silent no-op)', async () => {
@@ -522,6 +539,7 @@ describe('Users Routes', () => {
         expect(mockUserSync.assertGoAllowsSuperAdminDelete).toHaveBeenCalledWith('admin');
         expect(mockUserSync.mirrorDelete).toHaveBeenCalledWith('admin');
         expect(mockDb.deleteUser).toHaveBeenCalledWith(2);
+        expect(mockAuthService.revokeUserSessionsAndTokens).toHaveBeenCalledWith(2, { exceptSid: '' });
     });
 
     it('refuses delete when Go still has only one Super Admin (Issue #315)', async () => {

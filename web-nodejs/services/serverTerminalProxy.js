@@ -279,8 +279,14 @@ function initServerTerminalProxy(server, sessionMiddleware, opts) {
                     return socket.destroy();
                 }
                 const sessUser = req.session.user || {};
-                const role = sessUser.role || req.session.role || '';
+                let role = sessUser.role || req.session.role || '';
                 const username = sessUser.username || `user#${req.session.userId}`;
+                if (getUserById) {
+                    // The session holds the role from login; authorize the
+                    // shell against the role the account has now.
+                    const current = await Promise.resolve(getUserById(req.session.userId)).catch(() => null);
+                    role = current?.role || '';
+                }
                 if (!(await terminalAllowed(role))) {
                     console.warn(`[srv-term] 403 upgrade rejected (user=${username} role=${role})`);
                     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');

@@ -95,6 +95,11 @@ describe('server terminal proxy', () => {
         expect(await rejection(connect(server))).toBe(403);
     });
 
+    it('checks the current role at the handshake, not the one in the session', async () => {
+        server = await startServer({ role: 'super_admin', dbRole: 'operator', saved: 0 });
+        expect(await rejection(connect(server))).toBe(403);
+    });
+
     it('rejects a terminal role whose server.config permission was removed', async () => {
         mockPermissions.set('server_admin', new Set());
         server = await startServer({ role: 'server_admin', saved: 0 });

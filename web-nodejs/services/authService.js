@@ -1378,7 +1378,36 @@ async function cleanupHousekeeping() {
     }
 }
 
+/**
+ * End every panel session of a user and revoke the user's desktop client
+ * tokens. Sessions carry the role captured at login and permission checks
+ * read it from there, so a role change, password reset or deletion must end
+ * them or the old privileges stay in force until the session expires.
+ *
+ * @param {number} userId
+ * @param {{ exceptSid?: string }} [opts] keep the caller's own session when
+ *   an administrator changes their own account
+ * @returns {Promise<number>} panel sessions ended
+ */
+async function revokeUserSessionsAndTokens(userId, { exceptSid = '' } = {}) {
+    const panelSessionService = require('./panelSessionService');
+    const { END_REASONS } = require('../lib/sessionPolicy');
+    let ended = 0;
+    const store = panelSessionService.getStore();
+    if (store && typeof store.listUserSessions === 'function') {
+        const sessions = await store.listUserSessions(userId, { includeEnded: false, limit: 200 });
+        for (const session of sessions) {
+            if (session.sid === exceptSid) continue;
+            await store.endSession(session.sid, END_REASONS.REVOKED);
+            ended += 1;
+        }
+    }
+    await db.revokeAllUserTokens(userId);
+    return ended;
+}
+
 module.exports = {
+    revokeUserSessionsAndTokens,
     hashPassword,
     verifyPassword,
     authenticate,
