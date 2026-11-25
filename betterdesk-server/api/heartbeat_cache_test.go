@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,5 +120,58 @@ func TestTTLCacheDropsLoadsRacedByInvalidation(t *testing.T) {
 	failing.get(func() (int, bool) { return 9, false })
 	if v := failing.get(func() (int, bool) { return 4, true }); v != 4 {
 		t.Fatalf("failed load was cached: got %d", v)
+	}
+}
+
+func TestTTLCacheSharesOneLoadBetweenConcurrentMisses(t *testing.T) {
+	var cache ttlCache[int]
+	var loads atomic.Int32
+	release := make(chan struct{})
+	load := func() (int, bool) {
+		loads.Add(1)
+		<-release
+		return 7, true
+	}
+
+	var wg sync.WaitGroup
+	results := make([]int, 20)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = cache.get(load)
+		}(i)
+	}
+	// Let every goroutine reach the cache before the load finishes.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if n := loads.Load(); n != 1 {
+		t.Fatalf("%d loads for one miss, want 1", n)
+	}
+	for i, v := range results {
+		if v != 7 {
+			t.Fatalf("caller %d got %d", i, v)
+		}
+	}
+}
+
+func TestTTLCacheInvalidationDoesNotJoinAnOlderLoad(t *testing.T) {
+	var cache ttlCache[int]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go cache.get(func() (int, bool) {
+		close(started)
+		<-release
+		return 1, true // read before the write below
+	})
+	<-started
+	cache.invalidate() // a write landed while that load was running
+
+	got := cache.get(func() (int, bool) { return 2, true })
+	close(release)
+	if got != 2 {
+		t.Fatalf("caller after the write got %d from the older load", got)
 	}
 }

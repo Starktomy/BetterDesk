@@ -14,16 +14,23 @@ import (
 const heartbeatCacheTTL = 10 * time.Second
 
 // ttlCache holds one value that every heartbeat reads. The load runs outside
-// the lock so a slow database never blocks readers that can use the cache.
+// the lock so a slow database never blocks readers that can use the cache,
+// and concurrent misses share one load instead of each querying the database.
 type ttlCache[T any] struct {
-	mu      sync.Mutex
-	value   T
-	expires time.Time
-	gen     uint64
+	mu       sync.Mutex
+	value    T
+	expires  time.Time
+	gen      uint64
+	inflight *ttlLoad[T]
+}
+
+type ttlLoad[T any] struct {
+	done  chan struct{}
+	value T
 }
 
 // get returns the cached value, or loads it. A load that reports !ok is
-// returned to the caller but not cached, so a transient database error does
+// returned to its callers but not cached, so a transient database error does
 // not stick for the whole TTL.
 func (c *ttlCache[T]) get(load func() (T, bool)) T {
 	now := time.Now()
@@ -33,26 +40,41 @@ func (c *ttlCache[T]) get(load func() (T, bool)) T {
 		c.mu.Unlock()
 		return value
 	}
+	if pending := c.inflight; pending != nil {
+		c.mu.Unlock()
+		<-pending.done
+		return pending.value
+	}
+	pending := &ttlLoad[T]{done: make(chan struct{})}
+	c.inflight = pending
 	gen := c.gen
 	c.mu.Unlock()
 
-	value, ok := load()
-	if ok {
+	ok := false
+	defer func() {
 		c.mu.Lock()
 		// An invalidation during the load means the value may predate the write.
-		if c.gen == gen {
-			c.value = value
+		if ok && c.gen == gen {
+			c.value = pending.value
 			c.expires = now.Add(heartbeatCacheTTL)
 		}
+		if c.inflight == pending {
+			c.inflight = nil
+		}
 		c.mu.Unlock()
-	}
-	return value
+		close(pending.done)
+	}()
+	pending.value, ok = load()
+	return pending.value
 }
 
+// invalidate drops the cached value. A load already running may predate the
+// write, so later callers start a new one instead of waiting for it.
 func (c *ttlCache[T]) invalidate() {
 	c.mu.Lock()
 	c.gen++
 	c.expires = time.Time{}
+	c.inflight = nil
 	c.mu.Unlock()
 }
 
