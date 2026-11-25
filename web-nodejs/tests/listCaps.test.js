@@ -8,13 +8,10 @@ const { createTestApp, withAuth } = require('./helpers');
 
 const mockAdapter = {
     getAllTickets: jest.fn(async (filters) => Array.from({ length: filters.limit || 3 }, (_, id) => ({ id }))),
-    allAsync: jest.fn(async () => [{ name: 'peers' }]),
-    getAsync: jest.fn(async () => ({ count: 7 })),
+    getDatabaseStats: jest.fn(async () => ({ type: 'SQLite', tables: [{ name: 'peers', count: 7 }], sizeBytes: 2048 })),
 };
 jest.mock('../services/dbAdapter', () => ({
     getAdapter: () => mockAdapter,
-    allAsync: (...args) => mockAdapter.allAsync(...args),
-    getAsync: (...args) => mockAdapter.getAsync(...args),
 }));
 
 function appWith(router, mount = '/') {
@@ -49,7 +46,6 @@ describe('database stats widget', () => {
             expect(res.status).toBe(200);
             expect(res.body.tables).toEqual([{ name: 'peers', count: 7 }]);
         }
-        expect(mockAdapter.allAsync).toHaveBeenCalledTimes(1);
-        expect(mockAdapter.getAsync).toHaveBeenCalledTimes(1);
+        expect(mockAdapter.getDatabaseStats).toHaveBeenCalledTimes(1);
     });
 });

@@ -18,7 +18,6 @@ const { Readable, pipeline } = require('stream');
 const { exec } = require('child_process');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { apiLimiter } = require('../middleware/rateLimiter');
-const { assertSafeSqlIdent, isSafeSqlIdent } = require('../lib/safeSqlIdent');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -202,51 +201,18 @@ router.get('/api/database/stats', apiLimiter, requireAuth, requirePermission('me
     }
 });
 
-async function collectDatabaseStats() {
-    const db = require('../services/dbAdapter');
-    const config = require('../config/config');
-    const isPostgres = config.dbType === 'postgresql' || (config.databaseUrl || '').startsWith('postgres');
-    const result = { type: isPostgres ? 'PostgreSQL' : 'SQLite', tables: [], size: '-' };
+function formatBytes(bytes) {
+    if (!bytes) return '-';
+    const kb = bytes / 1024;
+    if (kb < 1024) return Math.round(kb) + ' KB';
+    const mb = kb / 1024;
+    return mb < 1024 ? mb.toFixed(1) + ' MB' : (mb / 1024).toFixed(2) + ' GB';
+}
 
-    if (isPostgres) {
-        // PostgreSQL table stats
-        const tables = await db.allAsync(
-            `SELECT tablename AS name FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename`
-        );
-        for (const tbl of tables) {
-            if (!isSafeSqlIdent(tbl.name)) continue;
-            try {
-                const safe = assertSafeSqlIdent(tbl.name);
-                const row = await db.getAsync(`SELECT COUNT(*) AS count FROM "${safe}"`);
-                result.tables.push({ name: safe, count: row ? row.count : 0 });
-            } catch (e) { /* skip */ }
-        }
-        // DB size
-        try {
-            const sizeRow = await db.getAsync(`SELECT pg_size_pretty(pg_database_size(current_database())) AS size`);
-            if (sizeRow) result.size = sizeRow.size;
-        } catch (e) { /* skip */ }
-    } else {
-        // SQLite table stats
-        const tables = await db.allAsync(
-            `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
-        );
-        for (const tbl of tables) {
-            if (!isSafeSqlIdent(tbl.name)) continue;
-            try {
-                const safe = assertSafeSqlIdent(tbl.name);
-                const row = await db.getAsync(`SELECT COUNT(*) AS count FROM "${safe}"`);
-                result.tables.push({ name: safe, count: row ? row.count : 0 });
-            } catch (e) { /* skip */ }
-        }
-        // DB file size
-        const dbPath = config.dbPath || path.join(__dirname, '..', 'data', 'auth.db');
-        if (fs.existsSync(dbPath)) {
-            const stat = fs.statSync(dbPath);
-            const kb = stat.size / 1024;
-            result.size = kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : Math.round(kb) + ' KB';
-        }
-    }
+async function collectDatabaseStats() {
+    const { getAdapter } = require('../services/dbAdapter');
+    const stats = await getAdapter().getDatabaseStats();
+    const result = { type: stats.type, tables: stats.tables, size: formatBytes(stats.sizeBytes) };
 
     // Check last backup
     const backupDir = path.join(__dirname, '..', 'data', 'backups');

@@ -1476,6 +1476,27 @@ function createSqliteAdapter(config) {
             return openAuth();
         },
 
+        /** Row counts per table and file size, for the dashboard widget. */
+        async getDatabaseStats() {
+            const handles = [...new Set([openMain(), openAuth()])];
+            const tables = [];
+            let sizeBytes = 0;
+            for (const db of handles) {
+                const names = db.prepare(
+                    `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+                ).all();
+                for (const { name } of names) {
+                    if (!isSafeSqlIdent(name)) continue;
+                    const row = db.prepare(`SELECT COUNT(*) AS count FROM "${assertSafeSqlIdent(name)}"`).get();
+                    tables.push({ name, count: row ? row.count : 0 });
+                }
+                try {
+                    if (db.name && fs.existsSync(db.name)) sizeBytes += fs.statSync(db.name).size;
+                } catch (_) { /* size is informational */ }
+            }
+            return { type: 'SQLite', tables, sizeBytes };
+        },
+
         // ---- Peers ----
 
         async getAllPeers(filters = {}) {
@@ -5291,6 +5312,21 @@ function createPostgresAdapter() {
 
     return {
         type: 'postgres',
+
+        /** Row counts per table and database size, for the dashboard widget. */
+        async getDatabaseStats() {
+            const names = await all(
+                `SELECT tablename AS name FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename`
+            );
+            const tables = [];
+            for (const { name } of names) {
+                if (!isSafeSqlIdent(name)) continue;
+                const row = await one(`SELECT COUNT(*)::bigint AS count FROM "${assertSafeSqlIdent(name)}"`);
+                tables.push({ name, count: row ? Number(row.count) : 0 });
+            }
+            const size = await one('SELECT pg_database_size(current_database())::bigint AS bytes');
+            return { type: 'PostgreSQL', tables, sizeBytes: size ? Number(size.bytes) : 0 };
+        },
 
         async init() {
             await ensureSchema();

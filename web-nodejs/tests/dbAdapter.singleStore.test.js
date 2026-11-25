@@ -38,6 +38,30 @@ describe('dbAdapter SQLite single-store topology', () => {
         await adapter.close();
     });
 
+    it('serves the database stats widget from the real adapter', async () => {
+        // No mocks: the widget used to call adapter methods that did not exist.
+        const request = require('supertest');
+        const { createTestApp, withAuth } = require('./helpers');
+        const { getAdapter } = require('../services/dbAdapter');
+        const adapter = getAdapter();
+        await adapter.init();
+        try {
+            await adapter.createTicket({ title: 't', description: '', priority: 'low', category: 'general', createdBy: 'ops' });
+            const app = createTestApp();
+            withAuth(app, { role: 'admin' });
+            app.use(require('../routes/system.routes'));
+
+            const res = await request(app).get('/api/database/stats');
+
+            expect(res.status).toBe(200);
+            expect(res.body.type).toBe('SQLite');
+            expect(res.body.tables).toEqual(expect.arrayContaining([{ name: 'tickets', count: 1 }]));
+            expect(res.body.size).toMatch(/KB|MB/);
+        } finally {
+            await adapter.close();
+        }
+    });
+
     it('caps ticket and registration lists only when asked', async () => {
         const { getAdapter } = require('../services/dbAdapter');
         const adapter = getAdapter();
