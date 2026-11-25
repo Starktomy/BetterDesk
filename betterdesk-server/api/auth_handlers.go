@@ -1104,8 +1104,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Role:      body.Role,
 	}
 	if body.ExpiresIn > 0 {
-		exp := time.Now().Add(time.Duration(body.ExpiresIn) * 24 * time.Hour).Format("2006-01-02 15:04:05")
-		key.ExpiresAt = exp
+		key.ExpiresAt = time.Now().UTC().Add(time.Duration(body.ExpiresIn) * 24 * time.Hour).Format(time.RFC3339)
 	}
 
 	if err := s.db.CreateAPIKey(key); err != nil {
@@ -1213,11 +1212,8 @@ func (s *Server) authenticateRequest(r *http.Request) (username, role string, ok
 	if apiKey != "" {
 		keyHash := hashAPIKey(apiKey)
 		if k, err := s.db.GetAPIKeyByHash(keyHash); err == nil && k != nil {
-			// Check expiry
-			if k.ExpiresAt != "" {
-				if exp, err := time.Parse("2006-01-02 15:04:05", k.ExpiresAt); err == nil && exp.Before(time.Now()) {
-					return "", "", false
-				}
+			if k.Expired(time.Now()) {
+				return "", "", false
 			}
 			// Update last_used in background
 			go func() { _ = s.db.TouchAPIKey(k.ID) }()

@@ -128,6 +128,26 @@ type APIKey struct {
 	LastUsed  string `json:"last_used,omitempty"`
 }
 
+// ExpiryTime accepts the timezone-qualified format and the legacy local time
+// written by older servers. An empty expiry represents a permanent key.
+func (k *APIKey) ExpiryTime() (time.Time, error) {
+	if k.ExpiresAt == "" {
+		return time.Time{}, nil
+	}
+	if expiry, err := time.Parse(time.RFC3339, k.ExpiresAt); err == nil {
+		return expiry, nil
+	}
+	return time.ParseInLocation("2006-01-02 15:04:05", k.ExpiresAt, time.Local)
+}
+
+func (k *APIKey) Expired(now time.Time) bool {
+	if k.ExpiresAt == "" {
+		return false
+	}
+	expiry, err := k.ExpiryTime()
+	return err != nil || !now.Before(expiry)
+}
+
 // IDChangeHistory tracks peer ID changes.
 type IDChangeHistory struct {
 	OldID     string    `json:"old_id"`

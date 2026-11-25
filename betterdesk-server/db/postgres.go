@@ -1937,10 +1937,11 @@ func (pg *PostgresDB) UserCount() (int, error) {
 func (pg *PostgresDB) CreateAPIKey(k *APIKey) error {
 	var expiresAt *time.Time
 	if k.ExpiresAt != "" {
-		t, err := time.Parse("2006-01-02 15:04:05", k.ExpiresAt)
-		if err == nil {
-			expiresAt = &t
+		t, err := k.ExpiryTime()
+		if err != nil {
+			return fmt.Errorf("db: CreateAPIKey: invalid expiry: %w", err)
 		}
+		expiresAt = &t
 	}
 
 	err := pg.pool.QueryRow(pg.ctx,
@@ -1971,7 +1972,7 @@ func scanAPIKey(row pgx.Row) (*APIKey, error) {
 		k.CreatedAt = createdAt.Format("2006-01-02 15:04:05")
 	}
 	if expiresAt != nil {
-		k.ExpiresAt = expiresAt.Format("2006-01-02 15:04:05")
+		k.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
 	}
 	if lastUsed != nil {
 		k.LastUsed = lastUsed.Format("2006-01-02 15:04:05")
