@@ -105,4 +105,38 @@ describe('Security Middleware', () => {
         else delete process.env.HSTS_ENABLED;
         jest.resetModules();
     });
+
+    it('limits jsDelivr to the xterm packages the pages load', async () => {
+        const app = createSecureApp();
+        app.get('/server-management', (_req, res) => res.send('ok'));
+
+        const csp = (await request(app).get('/server-management')).headers['content-security-policy'];
+        const tokens = csp.split(';').flatMap((directive) => directive.trim().split(/\s+/));
+        expect(tokens).not.toContain('https://cdn.jsdelivr.net');
+        expect(getScriptSrcDirective(csp)).toContain('https://cdn.jsdelivr.net/npm/@xterm/');
+    });
+
+    it('issues a fresh nonce per request without rebuilding helmet', async () => {
+        jest.resetModules();
+        delete process.env.CSP_RELAX_REMOTE;
+        const realHelmet = jest.requireActual('helmet');
+        const helmetCalls = jest.fn(realHelmet);
+        jest.doMock('helmet', () => helmetCalls);
+        const securityMw = require('../middleware/security');
+        const app = createTestApp();
+        app.use(securityMw);
+        app.get('/page', (_req, res) => res.send(res.locals.cspNonce));
+
+        const nonces = [];
+        for (let i = 0; i < 5; i += 1) {
+            const res = await request(app).get('/page');
+            expect(getScriptSrcDirective(res.headers['content-security-policy'])).toContain(`'nonce-${res.text}'`);
+            nonces.push(res.text);
+        }
+        expect(new Set(nonces).size).toBe(5);
+        expect(helmetCalls).toHaveBeenCalledTimes(1);
+
+        jest.dontMock('helmet');
+        jest.resetModules();
+    });
 });

@@ -7,13 +7,10 @@ const crypto = require('crypto');
 const helmet = require('helmet');
 const config = require('../config/config');
 
-/**
- * Build CSP connect-src based on HTTPS mode
- * Allow WebSocket connections (ws:// or wss:// depending on mode)
- */
-const connectSources = config.httpsEnabled
-    ? ["'self'", "wss:", "https://cdn.jsdelivr.net"]
-    : ["'self'", "ws:", "https://cdn.jsdelivr.net"];
+// Pages load only xterm from jsDelivr. Allowing the whole CDN would let any
+// injected markup load arbitrary npm or GitHub code past the nonce, so the
+// source is limited to the @xterm scope (a trailing "/" matches by prefix).
+const XTERM_CDN = 'https://cdn.jsdelivr.net/npm/@xterm/';
 
 /**
  * HSTS is disabled for self-signed / LAN installs so HTTP↔HTTPS toggles do not
@@ -36,14 +33,9 @@ function allowRemoteUnsafeEval() {
         || process.env.CSP_RELAX_REMOTE === '1';
 }
 
-function buildHelmetMiddleware(req, res) {
-    const nonce = crypto.randomBytes(16).toString('base64');
-    const isRemoteViewerPage = req.path.startsWith('/remote');
-
-    res.locals.cspNonce = nonce;
-
-    const scriptSources = ["'self'", `'nonce-${nonce}'`, "https://cdn.jsdelivr.net"];
-    if (isRemoteViewerPage && allowRemoteUnsafeEval()) {
+function createHelmet({ remoteEval, https, hsts }) {
+    const scriptSources = ["'self'", (_req, res) => `'nonce-${res.locals.cspNonce}'`, XTERM_CDN];
+    if (remoteEval) {
         scriptSources.push("'unsafe-eval'");
     }
 
@@ -54,11 +46,12 @@ function buildHelmetMiddleware(req, res) {
                 scriptSrc: scriptSources,
                 // Inline event handlers migrated to data-bd-call + bd-actions.js
                 scriptSrcAttr: ["'none'"],
-                styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdn.jsdelivr.net"],
+                styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", XTERM_CDN],
                 fontSrc: ["'self'", "https://fonts.gstatic.com"],
                 imgSrc: ["'self'", "data:", "blob:"],
                 mediaSrc: ["'self'", "blob:"],
-                connectSrc: connectSources,
+                // Allow WebSocket connections (ws:// or wss:// depending on mode)
+                connectSrc: ["'self'", https ? 'wss:' : 'ws:', XTERM_CDN],
                 frameSrc: ["'self'"],
                 objectSrc: ["'none'"],
                 childSrc: ["'self'"],
@@ -66,19 +59,42 @@ function buildHelmetMiddleware(req, res) {
                 baseUri: ["'self'"],
                 formAction: ["'self'"],
                 frameAncestors: ["'self'"],
-                upgradeInsecureRequests: config.httpsEnabled ? [] : null
+                upgradeInsecureRequests: https ? [] : null
             }
         },
         crossOriginEmbedderPolicy: false,
         crossOriginResourcePolicy: { policy: 'same-origin' },
-        crossOriginOpenerPolicy: config.httpsEnabled ? { policy: 'same-origin' } : false,
-        originAgentCluster: config.httpsEnabled,
-        strictTransportSecurity: shouldSendStrictTransportSecurity()
+        crossOriginOpenerPolicy: https ? { policy: 'same-origin' } : false,
+        originAgentCluster: https,
+        strictTransportSecurity: hsts
             ? { maxAge: 31536000, includeSubDomains: true, preload: false }
             : false,
         dnsPrefetchControl: { allow: false },
         referrerPolicy: { policy: 'strict-origin-when-cross-origin' }
     });
+}
+
+// helmet() validates and compiles its whole configuration on each call, so
+// building it per request cost every response that work. The inputs take a
+// handful of values; build each combination once. The nonce stays per
+// request through the function directive above.
+const helmetByVariant = new Map();
+
+function buildHelmetMiddleware(req, res) {
+    res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
+
+    const variant = {
+        remoteEval: req.path.startsWith('/remote') && allowRemoteUnsafeEval(),
+        https: !!config.httpsEnabled,
+        hsts: shouldSendStrictTransportSecurity()
+    };
+    const key = `${variant.remoteEval}|${variant.https}|${variant.hsts}`;
+    let middleware = helmetByVariant.get(key);
+    if (!middleware) {
+        middleware = createHelmet(variant);
+        helmetByVariant.set(key, middleware);
+    }
+    return middleware;
 }
 
 /**

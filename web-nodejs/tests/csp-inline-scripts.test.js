@@ -59,9 +59,9 @@ describe('inline scripts carry the CSP nonce', () => {
     it('keeps the strict policy: a nonce is required, inline is not allowed', () => {
         const security = fs.readFileSync(path.join(root, 'middleware', 'security.js'), 'utf8');
         // The nonce is what the views interpolate; the policy must keep requiring it.
-        assert.match(security, /res\.locals\.cspNonce\s*=\s*nonce/);
+        assert.match(security, /res\.locals\.cspNonce\s*=\s*crypto\.randomBytes/);
         assert.match(security, /scriptSrc:\s*scriptSources/);
-        assert.match(security, /'nonce-\$\{nonce\}'/);
+        assert.match(security, /'nonce-\$\{res\.locals\.cspNonce\}'/);
         assert.doesNotMatch(security, /scriptSources\.push\('unsafe-inline'\)/,
             "enabling 'unsafe-inline' would defeat the policy instead of fixing the script");
     });

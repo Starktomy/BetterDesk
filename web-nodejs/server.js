@@ -101,15 +101,17 @@ try {
 // Security headers (Helmet)
 app.use(securityMiddleware);
 
-// CORS for BetterDesk desktop clients (Tauri webview origins)
+// CORS for BetterDesk desktop clients (Tauri webview origins). The Tauri dev
+// server origin is a plain localhost web origin that any local process can
+// serve, so credentialed access from it is allowed outside production only.
+const CORS_ALLOWED_ORIGINS = [
+    'tauri://localhost',        // Tauri production (macOS/Linux)
+    'https://tauri.localhost',  // Tauri production (Windows)
+    ...(config.isProduction ? [] : ['http://localhost:1420']), // Tauri dev
+];
 app.use('/api/', (req, res, next) => {
     const origin = req.headers.origin || '';
-    const allowed = [
-        'http://localhost:1420',    // Tauri dev
-        'tauri://localhost',        // Tauri production (macOS/Linux)
-        'https://tauri.localhost',  // Tauri production (Windows)
-    ];
-    if (allowed.includes(origin)) {
+    if (CORS_ALLOWED_ORIGINS.includes(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, X-CSRF-Token');
