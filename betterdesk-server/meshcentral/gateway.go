@@ -143,6 +143,21 @@ func (g *Gateway) MeshNodeID(peerID string) string {
 	return val
 }
 
+// requestContext ends when the request does or when the gateway stops.
+// Hijacked WebSocket connections outlive http.Server.Shutdown, so long-lived
+// control and relay sessions need the gateway lifecycle to end them.
+func (g *Gateway) requestContext(r *http.Request) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(r.Context())
+	if g.ctx == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(g.ctx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
 // Start initializes gateway lifecycle context.
 func (g *Gateway) Start(ctx context.Context) error {
 	g.ctx, g.cancel = context.WithCancel(ctx)

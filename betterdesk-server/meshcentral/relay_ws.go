@@ -64,8 +64,10 @@ func (g *Gateway) handleRelayWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.CloseNow()
 	conn.SetReadLimit(32 * 1024 * 1024)
 
+	ctx, cancel := g.requestContext(r)
+	defer cancel()
 	peer := &relayPeer{ws: conn, userID: cookie.RUserID, browser: browser}
-	g.pairRelay(r.Context(), relayID, peer, q.Get("p"), meta)
+	g.pairRelay(ctx, relayID, peer, q.Get("p"), meta)
 }
 
 func isKvmRelayProto(proto string) bool {

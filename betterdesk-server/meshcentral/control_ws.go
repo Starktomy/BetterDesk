@@ -27,7 +27,8 @@ func (g *Gateway) HandleControlWS(w http.ResponseWriter, r *http.Request, userID
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	ctx := r.Context()
+	ctx, cancel := g.requestContext(r)
+	defer cancel()
 
 	// Push initial nodes list
 	g.sendNodesList(ctx, conn, authorize)

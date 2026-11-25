@@ -64,7 +64,10 @@ func fmtFilename(peerID, relayID, sessionType string) string {
 	if len(prefix) > 8 {
 		prefix = prefix[:8]
 	}
-	return sanitizePathSegment(peerID) + "_" + sanitizePathSegment(sessionType) + "_" + ts + "_" + sanitizePathSegment(prefix) + ".mcrec"
+	// Only the peer ID may contain "_": the reader finds the other fields by
+	// counting separators from the end of the name.
+	kind := strings.ReplaceAll(sanitizePathSegment(sessionType), "_", "-")
+	return sanitizePathSegment(peerID) + "_" + kind + "_" + ts + "_" + strings.ReplaceAll(sanitizePathSegment(prefix), "_", "-") + ".mcrec"
 }
 
 func sanitizePathSegment(s string) string {
