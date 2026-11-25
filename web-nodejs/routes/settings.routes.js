@@ -408,24 +408,39 @@ router.post('/api/settings/branding', requireAuth, requirePermission('branding.e
 const UPLOADS_DIR = path.join(config.dataDir || path.join(__dirname, '..', 'data'), 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
+// The extension decides the Content-Type the file is served with, so it comes
+// from the checked MIME type and never from the client's filename: a
+// "logo.html" sent as image/png must not be stored as HTML.
+const IMAGE_EXTENSION_BY_MIME = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/svg+xml': '.svg'
+};
+
+function imageFileFilter(_req, file, cb) {
+    if (Object.hasOwn(IMAGE_EXTENSION_BY_MIME, file.mimetype)) {
+        cb(null, true);
+    } else {
+        cb(new Error('Invalid file type'));
+    }
+}
+
+function imageFilename(prefix) {
+    return (_req, file, cb) => {
+        const hash = crypto.randomBytes(8).toString('hex');
+        cb(null, `${prefix}-${hash}${IMAGE_EXTENSION_BY_MIME[file.mimetype]}`);
+    };
+}
+
 const logoUpload = multer({
     storage: multer.diskStorage({
         destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-        filename: (_req, file, cb) => {
-            const ext = path.extname(file.originalname).toLowerCase() || '.png';
-            const hash = crypto.randomBytes(8).toString('hex');
-            cb(null, `logo-${hash}${ext}`);
-        }
+        filename: imageFilename('logo')
     }),
     limits: { fileSize: 2 * 1024 * 1024 },
-    fileFilter: (_req, file, cb) => {
-        const allowed = /^image\/(png|jpeg|gif|webp|svg\+xml)$/;
-        if (allowed.test(file.mimetype)) {
-            cb(null, true);
-        } else {
-            cb(new Error('Invalid file type'));
-        }
-    }
+    fileFilter: imageFileFilter
 });
 
 /**
@@ -477,21 +492,10 @@ router.post('/api/settings/branding/upload-logo', requireAuth, requirePermission
 const bgUpload = multer({
     storage: multer.diskStorage({
         destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-        filename: (_req, file, cb) => {
-            const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
-            const hash = crypto.randomBytes(8).toString('hex');
-            cb(null, `bg-${hash}${ext}`);
-        }
+        filename: imageFilename('bg')
     }),
     limits: { fileSize: 8 * 1024 * 1024 },
-    fileFilter: (_req, file, cb) => {
-        const allowed = /^image\/(png|jpeg|gif|webp|svg\+xml)$/;
-        if (allowed.test(file.mimetype)) {
-            cb(null, true);
-        } else {
-            cb(new Error('Invalid file type'));
-        }
-    }
+    fileFilter: imageFileFilter
 });
 
 /**

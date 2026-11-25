@@ -70,6 +70,7 @@ const {
 const { resolveRedirectHost, buildSafeRedirectUrl } = require('./lib/redirectHost');
 const { safeJsonScript } = require('./lib/safeJsonScript');
 const { escapeHtml } = require('./lib/escapeHtml');
+const { createUploadsStatic } = require('./lib/uploadsStatic');
 
 // Create Express app
 const app = express();
@@ -220,9 +221,8 @@ app.use('/protos', express.static(path.join(__dirname, 'protos'), {
 // Serve uploaded branding assets (logos etc.) from persistent data dir
 const uploadsDir = path.join(config.dataDir || path.join(__dirname, 'data'), 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-app.use('/uploads', express.static(uploadsDir, {
-    maxAge: config.isProduction ? '30d' : '0',
-    etag: true
+app.use('/uploads', createUploadsStatic(uploadsDir, {
+    maxAge: config.isProduction ? '30d' : '0'
 }));
 
 // Serve desktop wallpapers

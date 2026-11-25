@@ -180,6 +180,36 @@ describe('Branding routes', () => {
         });
     });
 
+    describe('branding image extensions', () => {
+        it.each([
+            ['upload-logo', 'logo', /^\/uploads\/logo-[0-9a-f]{16}\.png$/],
+            ['upload-background', 'background', /^\/uploads\/bg-[0-9a-f]{16}\.png$/],
+        ])('%s derives the stored extension from the checked MIME type', async (route, field, expected) => {
+            const res = await request(app)
+                .post(`/api/settings/branding/${route}`)
+                .attach(field, Buffer.from('<script>alert(1)</script>'), {
+                    filename: 'evil.html',
+                    contentType: 'image/png'
+                });
+
+            expect(res.status).toBe(200);
+            expect(res.body.url).toMatch(expected);
+            const uploaded = path.join(config.dataDir, 'uploads', path.basename(res.body.url));
+            if (fs.existsSync(uploaded)) fs.unlinkSync(uploaded);
+        });
+
+        it('rejects files whose MIME type is not an allowed image', async () => {
+            const res = await request(app)
+                .post('/api/settings/branding/upload-logo')
+                .attach('logo', Buffer.from('<html></html>'), {
+                    filename: 'logo.png',
+                    contentType: 'text/html'
+                });
+
+            expect(res.status).toBe(400);
+        });
+    });
+
     describe('POST /api/settings/branding/upload-background', () => {
         it('lists uploaded managed background images', async () => {
             const uploadsDir = path.join(config.dataDir, 'uploads');
