@@ -938,6 +938,7 @@ func (s *Server) handleClientHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	var responsePublicKey *[32]byte
 	envelopeVerified := false
+	statusIP := clientIP
 	if len(body.BetterDeskEnvelope) > 0 {
 		opened, err := s.openTelemetryEnvelope(deviceID, body.BetterDeskEnvelope)
 		if err != nil {
@@ -957,6 +958,14 @@ func (s *Server) handleClientHeartbeat(w http.ResponseWriter, r *http.Request) {
 		s.rememberSecureClientKey(deviceID, responsePublicKey)
 		s.rememberVerifiedIdentity(deviceID, body)
 		s.processConnectionModeAck(deviceID, body)
+	} else if s.hasVerifiedIdentity(deviceID) {
+		// This device has proved itself with a signed envelope before, so a
+		// plain heartbeat for it may come from anyone who knows the ID. Keep
+		// it as a liveness signal only: no address change, no metrics and no
+		// unsigned telemetry. Stock RustDesk clients never reach this branch.
+		statusIP = peer.IP
+		body.CPU, body.Memory, body.Disk = 0, 0, 0
+		body.Telemetry = nil
 	} else {
 		s.rememberUnverifiedIdentity(deviceID, body)
 	}
@@ -970,7 +979,7 @@ func (s *Server) handleClientHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Update peer status to ONLINE
-	_ = s.db.UpdatePeerStatus(deviceID, "ONLINE", clientIP, "heartbeat")
+	_ = s.db.UpdatePeerStatus(deviceID, "ONLINE", statusIP, "heartbeat")
 	// HTTP heartbeats are also a liveness signal for BetterDesk clients that
 	// do not maintain a UDP/WebSocket signal connection. Refresh the in-memory
 	// peer map so the signal heartbeat cleaner does not mark them offline again.

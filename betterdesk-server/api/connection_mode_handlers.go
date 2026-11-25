@@ -159,6 +159,12 @@ func (s *Server) connectionModeEligibility(peer *db.Peer) (controllable, support
 	return false, false
 }
 
+// hasVerifiedIdentity reports whether the device has sent a signed envelope.
+func (s *Server) hasVerifiedIdentity(deviceID string) bool {
+	snap, err := s.db.GetTelemetrySnapshot(deviceID, db.VerifiedIdentityKind)
+	return err == nil && snap != nil
+}
+
 func (s *Server) verifiedIdentity(deviceID string) verifiedDeviceIdentity {
 	var identity verifiedDeviceIdentity
 	snap, err := s.db.GetTelemetrySnapshot(deviceID, db.VerifiedIdentityKind)
@@ -196,10 +202,9 @@ func (s *Server) rememberVerifiedIdentity(deviceID string, body clientHeartbeatR
 	s.classifyPeerFromClient(deviceID, body.ProductSKU, body.ConnMode, true)
 }
 
+// rememberUnverifiedIdentity is only called for devices without a verified
+// identity (see hasVerifiedIdentity), so it never overwrites a signed one.
 func (s *Server) rememberUnverifiedIdentity(deviceID string, body clientHeartbeatRequest) {
-	if snap, err := s.db.GetTelemetrySnapshot(deviceID, db.VerifiedIdentityKind); err == nil && snap != nil {
-		return
-	}
 	if body.ProductSKU == "" && body.ConnMode == "" && len(body.Capabilities) == 0 {
 		return
 	}

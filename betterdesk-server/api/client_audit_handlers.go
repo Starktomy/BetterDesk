@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -109,6 +110,10 @@ func (s *Server) handleAuditConnPost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "host_id is required"})
 		return
 	}
+	if !s.knownAuditHost(hostID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown host_id"})
+		return
+	}
 	connType := 0
 	if v, ok := body["conn_type"].(float64); ok {
 		connType = int(v)
@@ -117,10 +122,7 @@ func (s *Server) handleAuditConnPost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid conn_type"})
 		return
 	}
-	ip := truncStr(coerceStr(body["ip"]), 64)
-	if ip == "" {
-		ip = s.remoteIP(r)
-	}
+	ip := s.auditReportedIP(r, body["ip"])
 	rec := &db.AuditConnection{
 		HostID:    hostID,
 		HostUUID:  truncStr(coerceStr(body["host_uuid"]), maxIDLen),
@@ -161,6 +163,26 @@ func (s *Server) handleAuditConnGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": emptyIfNilConn(rows), "total": total})
 }
 
+// RustDesk clients post audit reports without credentials, so a report can
+// only be checked for plausibility: it must name a registered device, and
+// the reported address (the remote party's, not the reporter's) must be an
+// IP. An unparseable value falls back to the reporter's address as before.
+func (s *Server) knownAuditHost(hostID string) bool {
+	peer, err := s.db.GetPeer(hostID)
+	return err == nil && peer != nil && !peer.SoftDeleted
+}
+
+func (s *Server) auditReportedIP(r *http.Request, raw any) string {
+	value := strings.TrimSpace(coerceStr(raw))
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.String()
+	}
+	return s.remoteIP(r)
+}
+
 // ── Audit: File Transfers ─────────────────────────────────────────────
 
 // handleAuditFilePost records a file-transfer event. Public endpoint.
@@ -173,6 +195,10 @@ func (s *Server) handleAuditFilePost(w http.ResponseWriter, r *http.Request) {
 	hostID := truncStr(coerceStr(body["host_id"]), maxIDLen)
 	if hostID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "host_id is required"})
+		return
+	}
+	if !s.knownAuditHost(hostID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown host_id"})
 		return
 	}
 	direction := 0
@@ -204,10 +230,7 @@ func (s *Server) handleAuditFilePost(w http.ResponseWriter, r *http.Request) {
 			filesJSON = string(b)
 		}
 	}
-	ip := truncStr(coerceStr(body["ip"]), 64)
-	if ip == "" {
-		ip = s.remoteIP(r)
-	}
+	ip := s.auditReportedIP(r, body["ip"])
 	rec := &db.AuditFile{
 		HostID:    hostID,
 		HostUUID:  truncStr(coerceStr(body["host_uuid"]), maxIDLen),
@@ -279,9 +302,10 @@ func (s *Server) handleAuditAlarmPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	ip := truncStr(coerceStr(body["ip"]), 64)
-	if ip == "" {
-		ip = s.remoteIP(r)
+	ip := s.auditReportedIP(r, body["ip"])
+	if hostID := truncStr(coerceStr(body["host_id"]), maxIDLen); hostID != "" && !s.knownAuditHost(hostID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown host_id"})
+		return
 	}
 	rec := &db.AuditAlarm{
 		AlarmType: alarmType,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/unitronix/betterdesk-server/config"
 	cryptopkg "github.com/unitronix/betterdesk-server/crypto"
+	"github.com/unitronix/betterdesk-server/db"
 	"github.com/unitronix/betterdesk-server/peer"
 )
 
@@ -21,6 +22,10 @@ func startTestServer(t *testing.T, port int) (*config.Config, func()) {
 	cfg := config.DefaultConfig()
 	cfg.APIPort = port
 	database := testSetupDB(t)
+	// Public audit reports must name a registered device.
+	if err := database.UpsertPeer(&db.Peer{ID: "1340238749"}); err != nil {
+		t.Fatal(err)
+	}
 	kp, err := cryptopkg.GenerateKeyPair()
 	if err != nil {
 		t.Fatal(err)
