@@ -70,6 +70,8 @@ type Server struct {
 	jwtManager       *auth.JWTManager
 	loginLimiter     *ratelimit.IPLimiter
 	heartbeatLimiter *ratelimit.IPLimiter // BD-2026-001: rate-limit heartbeat/sysinfo
+	brandingCache    ttlCache[BrandingConfig]
+	strategyCache    ttlCache[strategyOptionIndex]
 	// SECURITY (audit fix M-07, 2026-04-10): rate-limit public enrollment and
 	// branding endpoints to deter device-ID enumeration and config probing.
 	enrollmentLimiter *ratelimit.IPLimiter

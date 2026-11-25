@@ -157,6 +157,7 @@ func (s *Server) handleStrategiesGet(w http.ResponseWriter, r *http.Request) {
 
 // handleStrategiesPost creates or updates a strategy. Auth enforced by route wrapper.
 func (s *Server) handleStrategiesPost(w http.ResponseWriter, r *http.Request) {
+	defer s.strategyCache.invalidate()
 	var body struct {
 		GUID            string          `json:"guid"`
 		Name            string          `json:"name"`
@@ -231,6 +232,7 @@ func (s *Server) handleStrategiesPost(w http.ResponseWriter, r *http.Request) {
 
 // handleStrategiesDelete removes a strategy by GUID.
 func (s *Server) handleStrategiesDelete(w http.ResponseWriter, r *http.Request) {
+	defer s.strategyCache.invalidate()
 	guid := truncStr(r.PathValue("guid"), maxIDLen)
 	if guid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "guid is required"})

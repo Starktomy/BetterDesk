@@ -21,6 +21,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -1055,45 +1056,9 @@ func (s *Server) clientStrategyConfigOptions(deviceID string) map[string]string 
 	if err != nil || peerKey == "" {
 		return out
 	}
-	strategies, err := s.db.ListStrategies()
-	if err != nil {
-		return out
-	}
-	for _, strategy := range strategies {
-		if strategy == nil || !strategy.Enabled {
-			continue
-		}
-		summary, err := s.db.GetStrategyAssignmentSummary(strategy.GUID)
-		if err != nil || summary == nil || !containsString(summary.Peers, peerKey) {
-			continue
-		}
-		var permissions map[string]any
-		if json.Unmarshal([]byte(strategy.Permissions), &permissions) != nil {
-			continue
-		}
-		for key, raw := range permissions {
-			if len(key) == 0 || len(key) > maxStrategyPermissionKeyLength {
-				continue
-			}
-			if _, allowed := rustDeskStrategyOptionKeys[key]; !allowed {
-				continue
-			}
-			value, ok := normalizeStrategyOptionValue(raw)
-			if ok {
-				out[key] = value
-			}
-		}
-	}
+	index := s.strategyCache.get(s.readStrategyIndex)
+	maps.Copy(out, index[peerKey])
 	return out
-}
-
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeStrategyOptionValue(value any) (string, bool) {

@@ -98,7 +98,7 @@ func defaultBetterDeskApply() []string {
 }
 
 // loadBrandingConfig reads Client Branding from server_config with safe defaults.
-func (s *Server) loadBrandingConfig() BrandingConfig {
+func (s *Server) readBrandingConfig() BrandingConfig {
 	cfg := BrandingConfig{
 		SchemaVersion:  brandingSchemaVersion,
 		Revision:       "0",
@@ -372,6 +372,7 @@ func (s *Server) handleSaveBranding(w http.ResponseWriter, r *http.Request) {
 
 	revision := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	s.db.SetConfig("branding_revision", revision)
+	s.brandingCache.invalidate()
 
 	if s.auditLog != nil {
 		s.auditLog.Log("branding_updated", s.remoteIP(r), getUsernameFromCtx(r), nil)

@@ -64,6 +64,7 @@ func (s *Server) handleStrategiesGetByGUID(w http.ResponseWriter, r *http.Reques
 // handleStrategiesAssign assigns or unassigns a strategy to peers/users/device groups.
 // POST /api/strategies/assign  { strategy?, peers[], users[], groups[] }
 func (s *Server) handleStrategiesAssign(w http.ResponseWriter, r *http.Request) {
+	defer s.strategyCache.invalidate()
 	var body struct {
 		Strategy string   `json:"strategy"`
 		Peers    []string `json:"peers"`
@@ -129,6 +130,7 @@ func resolveStrategyRefs(resolver func(string) (string, error), refs []string, l
 
 // handleStrategiesStatus toggles strategy enabled flag. Body is raw JSON true/false.
 func (s *Server) handleStrategiesStatus(w http.ResponseWriter, r *http.Request) {
+	defer s.strategyCache.invalidate()
 	guid := truncStr(r.PathValue("guid"), maxIDLen)
 	if guid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "guid is required"})
@@ -182,6 +184,7 @@ func (s *Server) handleProDevicesList(w http.ResponseWriter, r *http.Request) {
 
 // handleProDeviceAssign assigns metadata to a device (strategy_name, note, etc.).
 func (s *Server) handleProDeviceAssign(w http.ResponseWriter, r *http.Request) {
+	defer s.strategyCache.invalidate()
 	guid := truncStr(r.PathValue("guid"), maxIDLen)
 	if guid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "guid is required"})
