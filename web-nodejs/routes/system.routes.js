@@ -14,30 +14,54 @@ const router = express.Router();
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { Readable, pipeline } = require('stream');
+const { exec } = require('child_process');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { apiLimiter } = require('../middleware/rateLimiter');
 const { assertSafeSqlIdent, isSafeSqlIdent } = require('../lib/safeSqlIdent');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// Asynchronous on purpose: execSync blocked the whole event loop, every
+// request and WebSocket, for as long as the command ran (up to 10 s).
 function safeExec(cmd, timeout) {
+    return new Promise((resolve) => {
+        exec(cmd, {
+            timeout: timeout || 5000,
+            encoding: 'utf8',
+            maxBuffer: 4 * 1024 * 1024,
+            windowsHide: true
+        }, (err, stdout) => resolve(err ? '' : String(stdout || '').trim()));
+    });
+}
+
+// The fallback log files can be large; read only their end.
+const LOG_TAIL_BYTES = 256 * 1024;
+
+async function readTailLines(filePath, limit) {
+    const handle = await fs.promises.open(filePath, 'r');
     try {
-        return execSync(cmd, { timeout: timeout || 5000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    } catch (e) {
-        return '';
+        const { size } = await handle.stat();
+        const length = Math.min(size, LOG_TAIL_BYTES);
+        const buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, size - length);
+        const lines = buffer.toString('utf8').split('\n');
+        if (length < size) lines.shift(); // first line is likely partial
+        return lines.slice(-limit);
+    } finally {
+        await handle.close();
     }
 }
 
 // ─── GET /api/system/info ─────────────────────────────────────────────────────
 
-router.get('/api/system/info', requireAuth, requirePermission('metrics.view'), (req, res) => {
+router.get('/api/system/info', requireAuth, requirePermission('metrics.view'), async (req, res) => {
     try {
         const result = { processes: [], disks: [] };
 
         // --- Processes (top CPU consumers) ---
         if (process.platform === 'linux') {
-            const raw = safeExec('ps aux --sort=-%cpu | head -16');
+            const raw = await safeExec('ps aux --sort=-%cpu | head -16');
             const lines = raw.split('\n').slice(1); // skip header
             lines.forEach(line => {
                 const parts = line.trim().split(/\s+/);
@@ -50,7 +74,7 @@ router.get('/api/system/info', requireAuth, requirePermission('metrics.view'), (
                 }
             });
         } else if (process.platform === 'win32') {
-            const raw = safeExec('powershell -NoProfile -Command "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15 | ForEach-Object { $_.ProcessName + \'|\' + [math]::Round($_.CPU,1) + \'|\' + [math]::Round($_.WorkingSet64/1MB,1) }"', 10000);
+            const raw = await safeExec('powershell -NoProfile -Command "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15 | ForEach-Object { $_.ProcessName + \'|\' + [math]::Round($_.CPU,1) + \'|\' + [math]::Round($_.WorkingSet64/1MB,1) }"', 10000);
             raw.split('\n').forEach(line => {
                 const parts = line.trim().split('|');
                 if (parts.length >= 3) {
@@ -65,7 +89,7 @@ router.get('/api/system/info', requireAuth, requirePermission('metrics.view'), (
 
         // --- Disk usage ---
         if (process.platform === 'linux') {
-            const raw = safeExec('df -B1 --output=target,size,used,avail 2>/dev/null | tail -n +2');
+            const raw = await safeExec('df -B1 --output=target,size,used,avail 2>/dev/null | tail -n +2');
             raw.split('\n').forEach(line => {
                 const parts = line.trim().split(/\s+/);
                 if (parts.length >= 4) {
@@ -79,7 +103,7 @@ router.get('/api/system/info', requireAuth, requirePermission('metrics.view'), (
                 }
             });
         } else if (process.platform === 'win32') {
-            const raw = safeExec('wmic logicaldisk where "DriveType=3" get DeviceID,FreeSpace,Size /format:csv', 10000);
+            const raw = await safeExec('wmic logicaldisk where "DriveType=3" get DeviceID,FreeSpace,Size /format:csv', 10000);
             raw.split('\n').forEach(line => {
                 const parts = line.trim().split(',');
                 if (parts.length >= 4 && parts[1]) {
@@ -111,7 +135,7 @@ router.get('/api/system/info', requireAuth, requirePermission('metrics.view'), (
 
 // ─── GET /api/logs/recent ─────────────────────────────────────────────────────
 
-router.get('/api/logs/recent', apiLimiter, requireAuth, requirePermission('metrics.view'), (req, res) => {
+router.get('/api/logs/recent', apiLimiter, requireAuth, requirePermission('metrics.view'), async (req, res) => {
     try {
         const source = req.query.source || 'console';
         const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
@@ -120,7 +144,7 @@ router.get('/api/logs/recent', apiLimiter, requireAuth, requirePermission('metri
         if (source === 'go') {
             // Try to read Go server journal logs
             if (process.platform === 'linux') {
-                const raw = safeExec(`journalctl -u betterdesk-server --no-pager -n ${limit} --output=short-iso 2>/dev/null || journalctl -u betterdesk-go --no-pager -n ${limit} --output=short-iso 2>/dev/null`);
+                const raw = await safeExec(`journalctl -u betterdesk-server --no-pager -n ${limit} --output=short-iso 2>/dev/null || journalctl -u betterdesk-go --no-pager -n ${limit} --output=short-iso 2>/dev/null`);
                 if (raw) lines = raw.split('\n');
             }
             if (!lines.length) {
@@ -128,8 +152,7 @@ router.get('/api/logs/recent', apiLimiter, requireAuth, requirePermission('metri
                 const logPaths = ['/opt/rustdesk/betterdesk-server.log', '/opt/betterdesk/server.log', '/var/log/betterdesk-server.log'];
                 for (const lp of logPaths) {
                     if (fs.existsSync(lp)) {
-                        const content = fs.readFileSync(lp, 'utf8');
-                        lines = content.split('\n').slice(-limit);
+                        lines = await readTailLines(lp, limit);
                         break;
                     }
                 }
@@ -137,7 +160,7 @@ router.get('/api/logs/recent', apiLimiter, requireAuth, requirePermission('metri
         } else {
             // Console logs from journal
             if (process.platform === 'linux') {
-                const raw = safeExec(`journalctl -u betterdesk-console --no-pager -n ${limit} --output=short-iso 2>/dev/null`);
+                const raw = await safeExec(`journalctl -u betterdesk-console --no-pager -n ${limit} --output=short-iso 2>/dev/null`);
                 if (raw) lines = raw.split('\n');
             }
             if (!lines.length) {
@@ -145,8 +168,7 @@ router.get('/api/logs/recent', apiLimiter, requireAuth, requirePermission('metri
                 const logPaths = ['/opt/rustdesk/console.log', '/var/log/betterdesk-console.log'];
                 for (const lp of logPaths) {
                     if (fs.existsSync(lp)) {
-                        const content = fs.readFileSync(lp, 'utf8');
-                        lines = content.split('\n').slice(-limit);
+                        lines = await readTailLines(lp, limit);
                         break;
                     }
                 }
@@ -229,9 +251,9 @@ router.get('/api/database/stats', apiLimiter, requireAuth, requirePermission('me
 
 // ─── GET /api/docker/containers ───────────────────────────────────────────────
 
-router.get('/api/docker/containers', requireAuth, requirePermission('metrics.view'), (req, res) => {
+router.get('/api/docker/containers', requireAuth, requirePermission('metrics.view'), async (req, res) => {
     try {
-        const raw = safeExec('docker ps -a --format "{{.Names}}|{{.Image}}|{{.State}}|{{.Status}}|{{.Ports}}" 2>/dev/null', 10000);
+        const raw = await safeExec('docker ps -a --format "{{.Names}}|{{.Image}}|{{.State}}|{{.Status}}|{{.Ports}}" 2>/dev/null', 10000);
         if (!raw) {
             return res.json({ containers: [], available: false });
         }
@@ -261,7 +283,7 @@ const ALLOWED_COMMANDS = new Set([
     'ip addr', 'ss -tlnp', 'netstat -tlnp', 'top -bn1 | head -20'
 ]);
 
-router.post('/api/system/exec', requireAuth, requirePermission('server.config'), (req, res) => {
+router.post('/api/system/exec', requireAuth, requirePermission('server.config'), async (req, res) => {
     try {
         const { command } = req.body;
         if (!command || typeof command !== 'string') {
@@ -275,7 +297,7 @@ router.post('/api/system/exec', requireAuth, requirePermission('server.config'),
             return res.status(403).json({ error: 'Command not in allowed list. Allowed: ' + Array.from(ALLOWED_COMMANDS).join(', ') });
         }
 
-        const output = safeExec(trimmed, 10000);
+        const output = await safeExec(trimmed, 10000);
         res.json({ output: output || '(no output)', command: trimmed });
     } catch (err) {
         res.status(500).json({ error: 'Execution failed' });
@@ -284,6 +306,14 @@ router.post('/api/system/exec', requireAuth, requirePermission('server.config'),
 
 // ─── GET /api/speed-test ──────────────────────────────────────────────────────
 
+const SPEED_TEST_CHUNK = 65536;
+
+function* speedTestChunks(chunk, size) {
+    for (let remaining = size; remaining > 0; remaining -= chunk.length) {
+        yield remaining >= chunk.length ? chunk : chunk.subarray(0, remaining);
+    }
+}
+
 router.get('/api/speed-test', requireAuth, requirePermission('metrics.view'), (req, res) => {
     const size = Math.min(parseInt(req.query.size, 10) || 1048576, 10485760); // max 10MB
     res.set({
@@ -291,16 +321,10 @@ router.get('/api/speed-test', requireAuth, requirePermission('metrics.view'), (r
         'Content-Length': size,
         'Cache-Control': 'no-store'
     });
-    // Generate random-ish data in chunks to avoid large memory allocation
-    const chunkSize = 65536;
-    let remaining = size;
-    const chunk = Buffer.alloc(chunkSize, 0x42); // fill with 'B'
-    while (remaining > 0) {
-        const toWrite = Math.min(remaining, chunkSize);
-        res.write(toWrite === chunkSize ? chunk : chunk.slice(0, toWrite));
-        remaining -= toWrite;
-    }
-    res.end();
+    // Stream with backpressure. Writing the whole body in one loop ignored
+    // res.write()'s return value and buffered up to 10 MB per request.
+    const chunk = Buffer.alloc(SPEED_TEST_CHUNK, 0x42); // fill with 'B'
+    pipeline(Readable.from(speedTestChunks(chunk, size)), res, () => {});
 });
 
 module.exports = router;
