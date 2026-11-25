@@ -7,6 +7,7 @@
   },
   "common": {
     "loading": "Caricamento...",
+    "load_more": "Carica voci precedenti",
     "confirm": "Conferma",
     "alert": "Avviso",
     "prompt": "Inserisci valore",

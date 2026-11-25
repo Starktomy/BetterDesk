@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Memuat...",
+    "load_more": "Muat entri yang lebih lama",
     "confirm": "Konfirmasikan",
     "alert": "Alert",
     "prompt": "Masukkan nilai",

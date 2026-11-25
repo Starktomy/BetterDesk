@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "กำลังโหลด...",
+    "load_more": "โหลดรายการที่เก่ากว่า",
     "confirm": "ยืนยัน",
     "alert": "Alert",
     "prompt": "ป้อนค่า",

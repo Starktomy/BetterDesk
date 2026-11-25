@@ -77,6 +77,17 @@ describe('dbAdapter SQLite single-store topology', () => {
             expect(await adapter.getAllTickets({ limit: 'abc' })).toHaveLength(5);
             expect(await adapter.getPendingRegistrations({ status: 'pending' })).toHaveLength(5);
             expect(await adapter.getPendingRegistrations({ status: 'pending', limit: 3 })).toHaveLength(3);
+
+            // Rows created in the same second must still page without gaps
+            // or repeats.
+            for (const list of ['getAllTickets', 'getPendingRegistrations']) {
+                const seen = [];
+                for (let offset = 0; offset < 6; offset += 2) {
+                    seen.push(...(await adapter[list]({ limit: 2, offset })).map((row) => row.id));
+                }
+                expect(new Set(seen).size).toBe(5);
+                expect(seen).toHaveLength(5);
+            }
         } finally {
             await adapter.close();
         }

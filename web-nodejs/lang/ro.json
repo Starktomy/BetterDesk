@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Se încarcă...",
+    "load_more": "Încarcă intrările mai vechi",
     "confirm": "Confirmați",
     "alert": "Alertă",
     "prompt": "Introduceți valoarea",

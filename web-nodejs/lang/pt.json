@@ -7,6 +7,7 @@
   },
   "common": {
     "loading": "Carregando...",
+    "load_more": "Carregar entradas mais antigas",
     "confirm": "Confirmar",
     "alert": "Alerta",
     "prompt": "Insira o valor",

@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Yükleniyor...",
+    "load_more": "Daha eski kayıtları yükle",
     "confirm": "Onayla",
     "alert": "Alert",
     "prompt": "Değeri girin",

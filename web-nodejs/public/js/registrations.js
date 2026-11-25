@@ -76,6 +76,29 @@
 
     // ---- Load registrations ----
 
+    // Registration requests come a page at a time (newest first); older pages
+    // are appended on request. Enrollment rows are not paged.
+    let loadedEnrollments = [];
+    let loadedRegistrations = [];
+    let registrationNextOffset = null;
+
+    async function loadMoreRegistrations() {
+        const params = new URLSearchParams();
+        if (currentStatus) params.set('status', currentStatus);
+        if (currentSearch) params.set('search', currentSearch);
+        params.set('offset', String(registrationNextOffset));
+        try {
+            const result = await apiFetch(`/api/registrations?${params}`);
+            if (!result.success) throw new Error(result.error);
+            loadedRegistrations = loadedRegistrations.concat(normalizeRegistrations(result.data || []));
+            registrationNextOffset = result.truncated ? result.next_offset : null;
+            renderTable([...loadedEnrollments, ...loadedRegistrations]);
+        } catch (err) {
+            showToast(err.message || _('errors.server_error'), 'error');
+            renderTable([...loadedEnrollments, ...loadedRegistrations]);
+        }
+    }
+
     async function loadRegistrations() {
         const params = new URLSearchParams();
         if (currentStatus) params.set('status', currentStatus);
@@ -119,6 +142,9 @@
                 enrollments.push(...rows.filter(matchesSearch));
             }
 
+            loadedEnrollments = enrollments;
+            loadedRegistrations = registrations;
+            registrationNextOffset = registrationResult.truncated ? registrationResult.next_offset : null;
             renderTable([...enrollments, ...registrations]);
         } catch (err) {
             tbody.innerHTML = `
@@ -262,6 +288,21 @@
                 }
             });
         });
+
+        if (registrationNextOffset) {
+            tbody.insertAdjacentHTML('beforeend', `
+                <tr class="load-more-row">
+                    <td colspan="8">
+                        <button type="button" class="btn btn-secondary load-more-btn">${_('common.load_more')}</button>
+                    </td>
+                </tr>
+            `);
+            const loadMore = tbody.querySelector('.load-more-btn');
+            loadMore.addEventListener('click', () => {
+                loadMore.disabled = true;
+                loadMoreRegistrations();
+            });
+        }
     }
 
     // ---- Actions ----

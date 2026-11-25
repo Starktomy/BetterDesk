@@ -30,6 +30,10 @@ describe('ticket list cap', () => {
         expect(mockAdapter.getAllTickets).toHaveBeenCalledWith(expect.objectContaining({ limit: 1001 }));
         expect(res.body.tickets).toHaveLength(1000);
         expect(res.body.truncated).toBe(true);
+        expect(res.body.next_offset).toBe(1000);
+
+        await request(app).get('/api/tickets?offset=1000');
+        expect(mockAdapter.getAllTickets).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 1001, offset: 1000 }));
     });
 });
 

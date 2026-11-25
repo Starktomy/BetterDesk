@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Indlæser...",
+    "load_more": "Indlæs ældre poster",
     "confirm": "Bekræft",
     "alert": "Advarsel",
     "prompt": "Indtast værdi",

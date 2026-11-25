@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Betöltés...",
+    "load_more": "Régebbi bejegyzések betöltése",
     "confirm": "Erősítse meg",
     "alert": "Figyelmeztetés",
     "prompt": "Adja meg az értéket",

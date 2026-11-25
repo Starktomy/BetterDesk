@@ -7,6 +7,7 @@
   },
   "common": {
     "loading": "Chargement...",
+    "load_more": "Charger les entrées plus anciennes",
     "confirm": "Confirmer",
     "alert": "Alerte",
     "prompt": "Saisir une valeur",

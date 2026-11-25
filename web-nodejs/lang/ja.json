@@ -7,6 +7,7 @@
   },
   "common": {
     "loading": "読み込み中...",
+    "load_more": "以前の項目を読み込む",
     "confirm": "確認",
     "alert": "アラート",
     "prompt": "値を入力",

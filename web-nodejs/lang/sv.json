@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Laddar...",
+    "load_more": "Läs in äldre poster",
     "confirm": "Bekräfta",
     "alert": "Varning",
     "prompt": "Ange värde",

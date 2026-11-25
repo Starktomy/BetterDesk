@@ -7,6 +7,7 @@
   },
   "common": {
     "loading": "Cargando...",
+    "load_more": "Cargar entradas anteriores",
     "confirm": "Confirmar",
     "alert": "Alerta",
     "prompt": "Pregunta",

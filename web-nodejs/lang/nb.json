@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Laster inn...",
+    "load_more": "Last inn eldre oppføringer",
     "confirm": "Bekreft",
     "alert": "Advarsel",
     "prompt": "Skriv inn verdi",

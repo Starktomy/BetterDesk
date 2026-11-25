@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Đang tải...",
+    "load_more": "Tải các mục cũ hơn",
     "confirm": "Xác nhận",
     "alert": "Alert",
     "prompt": "Nhập giá trị",

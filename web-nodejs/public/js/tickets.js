@@ -48,17 +48,27 @@
 
     // ---- Load ----
 
-    async function loadTickets() {
-        tbody.innerHTML = `<tr class="loading-row"><td colspan="9">${_('common.loading')}</td></tr>`;
+    // The API returns the newest tickets a page at a time; older pages are
+    // appended on request instead of being unreachable.
+    let loadedTickets = [];
+    let nextOffset = null;
+
+    async function loadTickets(append = false) {
+        if (!append) {
+            tbody.innerHTML = `<tr class="loading-row"><td colspan="9">${_('common.loading')}</td></tr>`;
+        }
 
         const params = new URLSearchParams();
         if (currentStatus) params.set('status', currentStatus);
         if (currentSearch) params.set('search', currentSearch);
+        if (append && nextOffset) params.set('offset', String(nextOffset));
 
         try {
             const result = await apiFetch(`/api/tickets?${params}`);
             const tickets = result.tickets || [];
-            renderTable(tickets);
+            loadedTickets = append ? loadedTickets.concat(tickets) : tickets;
+            nextOffset = result.truncated ? result.next_offset : null;
+            renderTable(loadedTickets);
         } catch (err) {
             tbody.innerHTML = `<tr class="empty-row"><td colspan="9">
                 <div class="empty-state"><span class="material-icons">error_outline</span>
@@ -116,9 +126,18 @@
                     </button>
                 </td>
             </tr>`;
-        }).join('');
+        }).join('') + (nextOffset ? `<tr class="load-more-row"><td colspan="9">
+                <button type="button" class="btn btn-secondary load-more-btn">${_('common.load_more')}</button>
+            </td></tr>` : '');
 
         attachRowListeners();
+        const loadMore = tbody.querySelector('.load-more-btn');
+        if (loadMore) {
+            loadMore.addEventListener('click', () => {
+                loadMore.disabled = true;
+                loadTickets(true);
+            });
+        }
     }
 
     function attachRowListeners() {

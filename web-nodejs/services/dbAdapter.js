@@ -2331,8 +2331,9 @@ function createSqliteAdapter(config) {
             if (filters.created_by) { where += ' AND created_by = ?'; params.push(filters.created_by); }
             if (filters.search) { where += ` AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')`; const s = `%${escapeLikePattern(filters.search)}%`; params.push(s, s); }
             const limit = listLimit(filters.limit);
-            if (limit) params.push(limit);
-            return db.prepare(`SELECT * FROM tickets ${where} ORDER BY created_at DESC${limit ? ' LIMIT ?' : ''}`).all(...params);
+            const offset = limit ? listLimit(filters.offset) : 0;
+            if (limit) params.push(limit, offset);
+            return db.prepare(`SELECT * FROM tickets ${where} ORDER BY created_at DESC, id DESC${limit ? ' LIMIT ? OFFSET ?' : ''}`).all(...params);
         },
 
         async updateTicket(id, data) {
@@ -2949,8 +2950,9 @@ function createSqliteAdapter(config) {
                 params.push(s, s, s);
             }
             const limit = listLimit(filters.limit);
-            if (limit) params.push(limit);
-            const order = `ORDER BY created_at DESC${limit ? ' LIMIT ?' : ''}`;
+            const offset = limit ? listLimit(filters.offset) : 0;
+            if (limit) params.push(limit, offset);
+            const order = `ORDER BY created_at DESC, id DESC${limit ? ' LIMIT ? OFFSET ?' : ''}`;
             return db.prepare(`SELECT * FROM pending_registrations ${where} ${order}`).all(...params);
         },
 
@@ -6126,8 +6128,9 @@ function createPostgresAdapter() {
             if (filters.created_by) { where += ` AND created_by = $${idx++}`; params.push(filters.created_by); }
             if (filters.search) { where += ` AND (title ILIKE $${idx} ESCAPE '\\' OR description ILIKE $${idx} ESCAPE '\\')`; params.push(`%${escapeLikePattern(filters.search)}%`); idx++; }
             const limit = listLimit(filters.limit);
-            if (limit) params.push(limit);
-            return all(`SELECT * FROM tickets ${where} ORDER BY created_at DESC${limit ? ` LIMIT $${idx}` : ''}`, params);
+            const offset = limit ? listLimit(filters.offset) : 0;
+            if (limit) params.push(limit, offset);
+            return all(`SELECT * FROM tickets ${where} ORDER BY created_at DESC, id DESC${limit ? ` LIMIT $${idx} OFFSET $${idx + 1}` : ''}`, params);
         },
 
         async updateTicket(id, data) {
@@ -6727,9 +6730,13 @@ function createPostgresAdapter() {
                 params.push(`%${filters.search}%`);
                 idx++;
             }
-            sql += ' ORDER BY created_at DESC';
+            sql += ' ORDER BY created_at DESC, id DESC';
             const limit = listLimit(filters.limit);
-            if (limit) { sql += ` LIMIT $${idx++}`; params.push(limit); }
+            if (limit) {
+                sql += ` LIMIT $${idx} OFFSET $${idx + 1}`;
+                params.push(limit, listLimit(filters.offset));
+                idx += 2;
+            }
             return all(sql, params);
         },
 

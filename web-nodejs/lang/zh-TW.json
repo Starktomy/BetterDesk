@@ -7,6 +7,7 @@
   },
   "common": {
     "loading": "加載中...",
+    "load_more": "載入較早的項目",
     "confirm": "確認",
     "alert": "提示",
     "prompt": "請輸入",

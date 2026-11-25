@@ -75,11 +75,18 @@ const SLA_HOURS = {
 // exist, instead of loading the whole table into memory per request.
 const LIST_CAP = 1000;
 
-async function listTickets(adapter, filters) {
-    const rows = await adapter.getAllTickets({ ...filters, limit: LIST_CAP + 1 });
+async function listTickets(adapter, filters, rawOffset) {
+    const offset = Math.max(0, parseInt(rawOffset, 10) || 0);
+    const rows = await adapter.getAllTickets({ ...filters, limit: LIST_CAP + 1, offset });
     const truncated = rows.length > LIST_CAP;
     const tickets = truncated ? rows.slice(0, LIST_CAP) : rows;
-    return { tickets, total: tickets.length, truncated };
+    return {
+        tickets,
+        total: tickets.length,
+        truncated,
+        offset,
+        next_offset: truncated ? offset + LIST_CAP : null,
+    };
 }
 
 function calculateSlaDue(priority) {
@@ -130,7 +137,7 @@ router.get('/', requireAuth, async (req, res) => {
         if (req.session.user.role === 'viewer') {
             filters.assigned_to = req.session.user.username;
         }
-        res.json(await listTickets(adapter, filters));
+        res.json(await listTickets(adapter, filters, req.query.offset));
     } catch (err) {
         console.error('[Tickets] List error:', err.message);
         res.status(500).json({ error: 'Internal server error' });
@@ -516,7 +523,7 @@ router.post('/bd', requireDeviceToken, async (req, res) => {
 router.get('/bd', requireDeviceToken, async (req, res) => {
     try {
         const adapter = getAdapter();
-        res.json(await listTickets(adapter, { device_id: req.deviceId }));
+        res.json(await listTickets(adapter, { device_id: req.deviceId }, req.query.offset));
     } catch (err) {
         console.error('[Tickets] Agent list error:', err.message);
         res.status(500).json({ error: 'Internal server error' });

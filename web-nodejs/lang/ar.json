@@ -14,6 +14,7 @@
   },
   "common": {
     "loading": "تحميل...",
+    "load_more": "تحميل الإدخالات الأقدم",
     "confirm": "يتأكد",
     "alert": "Alert",
     "prompt": "أدخل القيمة",

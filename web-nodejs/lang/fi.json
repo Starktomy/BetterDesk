@@ -13,6 +13,7 @@
   },
   "common": {
     "loading": "Ladataan...",
+    "load_more": "Lataa vanhemmat merkinnät",
     "confirm": "Vahvista",
     "alert": "Hälytys",
     "prompt": "Syötä arvo",

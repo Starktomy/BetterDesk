@@ -7,6 +7,7 @@
   },
   "common": {
     "loading": "Laden...",
+    "load_more": "Oudere items laden",
     "confirm": "Bevestigen",
     "alert": "Waarschuwing",
     "prompt": "Voer waarde in",

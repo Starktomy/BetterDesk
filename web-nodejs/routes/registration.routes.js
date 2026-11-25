@@ -218,7 +218,8 @@ router.get('/api/registrations', requirePermission('enrollment.approve'), async 
         };
         // Registrations arrive through a public endpoint, so the table can grow
         // without an operator; return the newest ones and say when more exist.
-        const rows = await db.getPendingRegistrations({ ...filters, limit: REGISTRATION_LIST_CAP + 1 });
+        const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+        const rows = await db.getPendingRegistrations({ ...filters, limit: REGISTRATION_LIST_CAP + 1, offset });
         const truncated = rows.length > REGISTRATION_LIST_CAP;
         const registrations = truncated ? rows.slice(0, REGISTRATION_LIST_CAP) : rows;
 
@@ -227,6 +228,8 @@ router.get('/api/registrations', requirePermission('enrollment.approve'), async 
             data: registrations,
             total: registrations.length,
             truncated,
+            offset,
+            next_offset: truncated ? offset + REGISTRATION_LIST_CAP : null,
         });
     } catch (err) {
         console.error('Get registrations error:', err);
