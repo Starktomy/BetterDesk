@@ -165,6 +165,14 @@ This quota applies only to the allowlisted read endpoints. Login, mutations,
 uploads, backups, update actions, and other public/API paths keep their own
 limits.
 
+The per-feature limits (`PANEL_READ_RATE_LIMIT_MAX`, `WIDGET_RATE_LIMIT_MAX`,
+`PANEL_PREFERENCE_RATE_LIMIT_MAX`, `RDCLIENT_PAGE_RATE_LIMIT_MAX`,
+`MESH_ACTION_RATE_LIMIT_MAX`, `UPLOAD_RATE_LIMIT_MAX`,
+`FILE_ACCESS_RATE_LIMIT_MAX`, `BD_REGISTER_RATE_LIMIT_MAX`) accept `0` to turn
+that limiter off. `MESH_ACTION_RATE_LIMIT_MAX` (default `60` per minute)
+applies per user and per action kind: terminal, files, share, TCP, UDP,
+power and exec each have their own budget.
+
 > [!TIP]
 > External reverse proxy (TLS on Caddy/Nginx :443): see [External Reverse Proxy Guide](https://github.com/UNITRONIX/BetterDesk/blob/dev/docs/setup/REVERSE_PROXY.md). Use `HOST=127.0.0.1`, `HTTPS_ENABLED=false`, and run `sudo betterdesk.sh` → **External reverse proxy** to generate Caddy/Nginx snippets.
 

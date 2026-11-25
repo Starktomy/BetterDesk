@@ -99,4 +99,38 @@ describe('MeshCentral action rate limiter', () => {
     it('exports a dedicated limiter for remote device actions', () => {
         expect(meshActionLimiter).toEqual(expect.any(Function));
     });
+
+    function meshApp(maxEnv) {
+        const express = require('express');
+        const original = process.env.MESH_ACTION_RATE_LIMIT_MAX;
+        process.env.MESH_ACTION_RATE_LIMIT_MAX = maxEnv;
+        let limiter;
+        jest.isolateModules(() => {
+            limiter = require('../middleware/rateLimiter').meshActionLimiter;
+        });
+        if (original === undefined) delete process.env.MESH_ACTION_RATE_LIMIT_MAX;
+        else process.env.MESH_ACTION_RATE_LIMIT_MAX = original;
+        const app = express();
+        app.use((req, _res, next) => { req.session = { userId: 9 }; next(); });
+        app.post('/api/mesh/devices/:id/:action', limiter, (_req, res) => res.json({ ok: true }));
+        return app;
+    }
+
+    it('keeps a separate budget per action kind', async () => {
+        const supertest = require('supertest');
+        const app = meshApp('2');
+        for (let i = 0; i < 2; i += 1) {
+            expect((await supertest(app).post('/api/mesh/devices/1/terminal')).status).toBe(200);
+        }
+        expect((await supertest(app).post('/api/mesh/devices/1/terminal')).status).toBe(429);
+        expect((await supertest(app).post('/api/mesh/devices/1/power')).status).toBe(200);
+    });
+
+    it('treats 0 as off instead of blocking every request', async () => {
+        const supertest = require('supertest');
+        const app = meshApp('0');
+        for (let i = 0; i < 5; i += 1) {
+            expect((await supertest(app).post('/api/mesh/devices/1/exec')).status).toBe(200);
+        }
+    });
 });

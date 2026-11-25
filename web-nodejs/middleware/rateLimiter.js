@@ -8,6 +8,20 @@ const config = require('../config/config');
 const defaultKeyGenerator = (req) => req.ip || req.headers['x-forwarded-for'] || 'unknown';
 
 /**
+ * Limit from an environment override. 0 turns the limiter off: passing 0 to
+ * express-rate-limit v7 would block every request (v6 treated it as "off"),
+ * and `|| default` silently ignored it. Anything else unparseable keeps the
+ * default.
+ */
+function envLimit(name, fallback) {
+    const n = parseInt(process.env[name], 10);
+    if (n === 0) return { max: fallback, skip: () => true };
+    return { max: Number.isInteger(n) && n > 0 ? n : fallback };
+}
+
+const MESH_ACTIONS = new Set(['terminal', 'files', 'share', 'tcp', 'udp', 'power', 'exec']);
+
+/**
  * Authenticated panel read/poll endpoints (dashboard widgets, status cards).
  * GET/HEAD only — mutations still use the general apiLimiter budget.
  *
@@ -156,7 +170,7 @@ const apiLimiter = rateLimit({
  */
 const widgetLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: parseInt(process.env.WIDGET_RATE_LIMIT_MAX, 10) || 600,
+    ...envLimit('WIDGET_RATE_LIMIT_MAX', 600),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -173,7 +187,7 @@ const widgetLimiter = rateLimit({
  */
 const panelReadLimiter = rateLimit({
     windowMs: config.rateLimitWindowMs,
-    max: parseInt(process.env.PANEL_READ_RATE_LIMIT_MAX, 10) || 600,
+    ...envLimit('PANEL_READ_RATE_LIMIT_MAX', 600),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -192,7 +206,7 @@ const panelReadLimiter = rateLimit({
  */
 const panelPreferenceLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: parseInt(process.env.PANEL_PREFERENCE_RATE_LIMIT_MAX, 10) || 30,
+    ...envLimit('PANEL_PREFERENCE_RATE_LIMIT_MAX', 30),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -212,7 +226,7 @@ const panelPreferenceLimiter = rateLimit({
  */
 const rdClientPageLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: parseInt(process.env.RDCLIENT_PAGE_RATE_LIMIT_MAX, 10) || 120,
+    ...envLimit('RDCLIENT_PAGE_RATE_LIMIT_MAX', 120),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -232,7 +246,7 @@ const rdClientPageLimiter = rateLimit({
  */
 const meshActionLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: parseInt(process.env.MESH_ACTION_RATE_LIMIT_MAX, 10) || 60,
+    ...envLimit('MESH_ACTION_RATE_LIMIT_MAX', 60),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -241,7 +255,12 @@ const meshActionLimiter = rateLimit({
     },
     keyGenerator: (req) => {
         const userId = req.session && (req.session.userId || req.session.user?.id);
-        if (userId) return `mesh-action:${userId}`;
+        if (userId) {
+            // One budget per action kind, so a burst of terminal or file
+            // sessions cannot leave an operator unable to power off or exec.
+            const action = String(req.path || '').split('/').pop();
+            return `mesh-action:${MESH_ACTIONS.has(action) ? action : 'other'}:${userId}`;
+        }
         return defaultKeyGenerator(req);
     }
 });
@@ -282,7 +301,7 @@ const passwordChangeLimiter = rateLimit({
  */
 const uploadLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: parseInt(process.env.UPLOAD_RATE_LIMIT_MAX, 10) || 30,
+    ...envLimit('UPLOAD_RATE_LIMIT_MAX', 30),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -297,7 +316,7 @@ const uploadLimiter = rateLimit({
  */
 const fileAccessLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: parseInt(process.env.FILE_ACCESS_RATE_LIMIT_MAX, 10) || 120,
+    ...envLimit('FILE_ACCESS_RATE_LIMIT_MAX', 120),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -317,7 +336,7 @@ const fileAccessLimiter = rateLimit({
  */
 const registerLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: parseInt(process.env.BD_REGISTER_RATE_LIMIT_MAX, 10) || 20,
+    ...envLimit('BD_REGISTER_RATE_LIMIT_MAX', 20),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
