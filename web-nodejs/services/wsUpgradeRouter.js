@@ -42,8 +42,13 @@ function ensureRouter(server) {
                 return;
             }
         }
-        // No registered route — leave the socket alone (same as the old
-        // multi-listener chain when every handler early-returned).
+        // No registered route. Node applies no timeout to a socket after the
+        // 'upgrade' event, so leaving it open let unauthenticated clients
+        // hold descriptors indefinitely. This is the only upgrade listener.
+        try {
+            socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+        } catch (_) { /* closed */ }
+        try { socket.destroy(); } catch (_) { /* closed */ }
     });
 
     return state;

@@ -44,7 +44,9 @@ describe('wsUpgradeRouter', () => {
         expect(socket.write).not.toHaveBeenCalled();
     });
 
-    test('leaves socket alone when no route matches', () => {
+    test('closes the socket with 404 when no route matches', () => {
+        // Node applies no timeout after 'upgrade', so an unanswered socket
+        // would stay open for as long as the client likes.
         const { registerUpgradeHandler } = require('../services/wsUpgradeRouter');
         const server = new EventEmitter();
         registerUpgradeHandler(server, (p) => p === '/ws/owned', () => {});
@@ -52,8 +54,8 @@ describe('wsUpgradeRouter', () => {
         const socket = { write: jest.fn(), destroy: jest.fn() };
         server.emit('upgrade', { url: '/ws/other', headers: { host: 'localhost' } }, socket, Buffer.alloc(0));
 
-        expect(socket.write).not.toHaveBeenCalled();
-        expect(socket.destroy).not.toHaveBeenCalled();
+        expect(socket.write).toHaveBeenCalledWith(expect.stringMatching(/^HTTP\/1\.1 404 /));
+        expect(socket.destroy).toHaveBeenCalled();
     });
 
     test('production WS inits share a single upgrade listener on one HTTP server', () => {

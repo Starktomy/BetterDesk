@@ -310,8 +310,11 @@ describe('wsRelay — security: session validation on WS upgrade', () => {
 
         // wsRelay returns early for non-owned paths — session middleware never called
         expect(middlewareCalled).toHaveLength(0);
-        // No 401 or 503 written to socket for an unrelated path
-        expect(fakeSocket.write).not.toHaveBeenCalled();
+        // wsRelay writes no 401 or 503 for an unrelated path; with no other
+        // route registered, the shared router answers 404 instead.
+        const written = fakeSocket.write.mock.calls.map(([chunk]) => String(chunk));
+        expect(written.some((line) => /^HTTP\/1\.1 (401|503) /.test(line))).toBe(false);
+        expect(written).toEqual([expect.stringMatching(/^HTTP\/1\.1 404 /)]);
 
         // No server to close — no async cleanup needed
         server = null;
