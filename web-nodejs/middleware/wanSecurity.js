@@ -18,6 +18,7 @@
  */
 
 const rateLimit = require('express-rate-limit');
+const { clientIp } = require('../lib/clientIp');
 
 /**
  * Allowed paths on the WAN API port.
@@ -337,10 +338,7 @@ const wanAuditLimiter = rateLimit({
  * Log all requests to this port (security audit trail)
  */
 function requestLogger(req, res, next) {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-        || req.headers['x-real-ip']
-        || req.socket?.remoteAddress
-        || 'unknown';
+    const ip = clientIp(req);
     const start = Date.now();
 
     res.on('finish', () => {

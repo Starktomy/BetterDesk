@@ -7,6 +7,7 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 const config = require('../config/config');
+const { clientIp: resolveClientIp } = require('../lib/clientIp');
 
 const HOP_BY_HOP = new Set([
     'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -35,15 +36,16 @@ function goApiProxy(req, res) {
     for (const h of HOP_BY_HOP) {
         delete headers[h];
     }
-    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-        || req.headers['x-real-ip']
-        || req.ip
-        || req.socket?.remoteAddress;
-    if (clientIp) {
-        headers['x-forwarded-for'] = req.headers['x-forwarded-for']
-            ? `${req.headers['x-forwarded-for']}, ${clientIp}`
-            : clientIp;
-        headers['x-real-ip'] = clientIp;
+    // Pass on only the address the trust proxy setting accepts. Forwarding
+    // the client's own X-Forwarded-For let it pick the X-Real-IP that Go
+    // uses for rate limits and lockouts.
+    const ip = resolveClientIp(req);
+    if (ip && ip !== 'unknown') {
+        headers['x-forwarded-for'] = ip;
+        headers['x-real-ip'] = ip;
+    } else {
+        delete headers['x-forwarded-for'];
+        delete headers['x-real-ip'];
     }
     headers.host = target.host;
 

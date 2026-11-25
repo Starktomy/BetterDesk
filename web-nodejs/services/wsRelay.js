@@ -15,6 +15,7 @@ const WebSocket = require('ws');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const { clientIp: resolveClientIp } = require('../lib/clientIp');
 const protobuf = require('protobufjs');
 const config = require('../config/config');
 const { enforceOrigin } = require('../middleware/wsOrigin');
@@ -456,9 +457,7 @@ function initWsProxy(server, sessionMiddleware) {
  * Handle a single proxied WebSocket connection
  */
 function handleProxyConnection(ws, req, targetHost, targetPort, label, options = {}) {
-    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-        || req.socket.remoteAddress
-        || 'unknown';
+    const clientIp = resolveClientIp(req);
 
     // Rate limit connections per IP
     const currentCount = connectionsPerIp.get(clientIp) || 0;

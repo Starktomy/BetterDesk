@@ -27,6 +27,7 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const { clientIp } = require('../lib/clientIp');
 const config = require('../config/config');
 const db = require('../services/database');
 const bdRelay = require('../services/bdRelay');
@@ -73,10 +74,7 @@ function normalizeHelpRequest(r) {
 // ---------------------------------------------------------------------------
 
 function getClientIp(req) {
-    return req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-        || req.headers['x-real-ip']
-        || req.socket?.remoteAddress
-        || 'unknown';
+    return clientIp(req);
 }
 
 function extractBearerToken(req) {

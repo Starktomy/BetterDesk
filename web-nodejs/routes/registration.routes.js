@@ -24,6 +24,7 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const { clientIp } = require('../lib/clientIp');
 const db = require('../services/database');
 const config = require('../config/config');
 const { requirePermission } = require('../middleware/auth');
@@ -50,10 +51,7 @@ function isValidGroupGuid(guid) {
 // ---------------------------------------------------------------------------
 
 function getClientIp(req) {
-    return req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-        || req.headers['x-real-ip']
-        || req.socket?.remoteAddress
-        || 'unknown';
+    return clientIp(req);
 }
 
 /**

@@ -26,6 +26,7 @@ const express = require('express');
 const router = express.Router();
 
 const { requireAuth, requirePermission } = require('../middleware/auth');
+const { clientIp } = require('../lib/clientIp');
 const sm = require('../services/serverManagement');
 const { isPtyAvailable, activeSessionCount } = require('../services/serverTerminalProxy');
 const db = require('../services/database');
@@ -36,9 +37,7 @@ const REQUIRED_PERMISSION = 'server.config';
 const auth = [requireAuth, requirePermission(REQUIRED_PERMISSION)];
 
 function getClientIp(req) {
-    const fwd = req.headers['x-forwarded-for'];
-    if (fwd) return String(fwd).split(',')[0].trim();
-    return req.ip || (req.socket && req.socket.remoteAddress) || '';
+    return clientIp(req);
 }
 
 async function audit(req, action, details) {

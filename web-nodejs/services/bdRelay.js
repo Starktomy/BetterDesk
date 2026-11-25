@@ -26,6 +26,7 @@
 
 const WebSocket = require('ws');
 const crypto = require('crypto');
+const { clientIp } = require('../lib/clientIp');
 const db = require('./database');
 const { verifyDeviceWsAuth } = require('../lib/deviceTokenAuth');
 
@@ -63,12 +64,6 @@ const REQUEST_TIMEOUT_MS = 15 * 1000; // 15s default
 
 function generateToken() {
     return crypto.randomBytes(32).toString('hex');
-}
-
-function clientIp(req) {
-    return req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-        || req.socket?.remoteAddress
-        || 'unknown';
 }
 
 function incIpCount(ip) {
