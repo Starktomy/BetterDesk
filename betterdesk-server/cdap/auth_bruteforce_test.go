@@ -1,11 +1,15 @@
 package cdap
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/unitronix/betterdesk-server/auth"
 	"github.com/unitronix/betterdesk-server/config"
 	"github.com/unitronix/betterdesk-server/db"
@@ -82,5 +86,48 @@ func TestUserPasswordAttemptsAreLimitedPerAccount(t *testing.T) {
 func TestUnknownUserComparisonUsesCurrentHashFormat(t *testing.T) {
 	if hash := dummyPasswordHash(); !strings.HasPrefix(hash, "pbkdf2-sha256$") {
 		t.Fatalf("dummy hash %q is not in the current PBKDF2 format", hash)
+	}
+}
+
+// Each connection is charged once against the IP limit, at the upgrade.
+func TestAuthDoesNotChargeTheIPLimitAgain(t *testing.T) {
+	gateway, database := newAPIKeyAuthGateway(t)
+	gateway.ctx = context.Background()
+	gateway.SetJWTManager(auth.NewJWTManager("cdap-test-secret-key-32-bytes-min!", time.Hour))
+	hash, err := auth.HashPassword("pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateUser(&db.User{Username: "agent", PasswordHash: hash, Role: "operator"}); err != nil {
+		t.Fatal(err)
+	}
+	gateway.SetRateLimiter(ratelimit.NewIPLimiter(1, time.Minute, time.Minute))
+
+	server := httptest.NewServer(http.HandlerFunc(gateway.handleWebSocket))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, strings.Replace(server.URL, "http://", "ws://", 1)+"/cdap",
+		&websocket.DialOptions{Subprotocols: []string{"cdap-v1"}})
+	if err != nil {
+		t.Fatalf("upgrade within the limit failed: %v", err)
+	}
+	defer conn.CloseNow()
+
+	payload, _ := json.Marshal(AuthPayload{Method: "user_password", Username: "agent", Password: "pw", DeviceID: "cdapdev01"})
+	frame, _ := json.Marshal(Message{Type: "auth", Payload: payload})
+	if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reply Message
+	if err := json.Unmarshal(data, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.Type != "auth_result" {
+		t.Fatalf("reply = %s %s, want auth_result", reply.Type, reply.Payload)
 	}
 }

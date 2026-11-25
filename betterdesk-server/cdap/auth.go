@@ -41,13 +41,10 @@ func (g *Gateway) handleAuth(ctx context.Context, conn *websocket.Conn, clientIP
 		return nil, fmt.Errorf("invalid auth payload: %w", err)
 	}
 
-	// Rate limit check for this IP
-	if g.limiter != nil && !g.limiter.Allow(clientIP) {
-		g.auditAction("cdap_auth_ratelimited", clientIP, map[string]string{
-			"method": payload.Method,
-		})
-		return nil, fmt.Errorf("rate limit exceeded")
-	}
+	// The IP limit was charged when the WebSocket was accepted, and each
+	// connection authenticates once; charging it again here halved the
+	// budget for devices behind a shared address. Password guesses are
+	// limited per account in authUserPassword.
 
 	var username, role string
 
