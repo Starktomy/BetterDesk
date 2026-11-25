@@ -11,32 +11,12 @@ import (
 	"github.com/unitronix/betterdesk-server/auth"
 )
 
-func (g *Gateway) handleControlWS(w http.ResponseWriter, r *http.Request) {
+// HandleControlWS uses the API principal and checks permissions for each action.
+func (g *Gateway) HandleControlWS(w http.ResponseWriter, r *http.Request, userID string, authorize func(string, []string) map[string]bool) {
 	if !g.allowIP(w, r) {
 		return
 	}
-
-	userID := ""
-	if g.jwt != nil {
-		if tok := r.Header.Get("x-meshauth"); tok != "" {
-			parts := strings.Split(tok, ",")
-			if len(parts) >= 1 {
-				claims, err := g.jwt.Validate(parts[0])
-				if err == nil {
-					userID = claims.Sub
-				}
-			}
-		}
-		if userID == "" {
-			if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-				claims, err := g.jwt.Validate(strings.TrimPrefix(h, "Bearer "))
-				if err == nil {
-					userID = claims.Sub
-				}
-			}
-		}
-	}
-	if userID == "" {
+	if userID == "" || authorize == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -48,12 +28,9 @@ func (g *Gateway) handleControlWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	ctx := r.Context()
-	if g.ctx != nil {
-		ctx = g.ctx
-	}
 
 	// Push initial nodes list
-	g.sendNodesList(ctx, conn, userID)
+	g.sendNodesList(ctx, conn, authorize)
 
 	for {
 		typ, data, err := conn.Read(ctx)
@@ -78,18 +55,18 @@ func (g *Gateway) handleControlWS(w http.ResponseWriter, r *http.Request) {
 				conn.Write(ctx, websocket.MessageText, resp)
 			}
 		case "nodes":
-			g.sendNodesList(ctx, conn, userID)
+			g.sendNodesList(ctx, conn, authorize)
 		case "runcommands":
 			nodeid, _ := msg["nodeid"].(string)
 			cmds, _ := msg["cmds"].(string)
 			peerID := g.peerIDFromNode(nodeid)
-			if peerID != "" {
+			if peerID != "" && authorize(auth.PermMeshTerminal, []string{peerID})[peerID] {
 				_ = g.SendRunCommand(peerID, userID, cmds, true)
 			}
 		case "devicepower":
 			nodeid, _ := msg["nodeid"].(string)
 			peerID := g.peerIDFromNode(nodeid)
-			if peerID == "" {
+			if peerID == "" || !authorize(auth.PermMeshPower, []string{peerID})[peerID] {
 				continue
 			}
 			forced := false
@@ -126,14 +103,22 @@ func (g *Gateway) handleControlWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (g *Gateway) sendNodesList(ctx context.Context, conn *websocket.Conn, userID string) {
-	nodes := []map[string]interface{}{}
+func (g *Gateway) sendNodesList(ctx context.Context, conn *websocket.Conn, authorize func(string, []string) map[string]bool) {
+	var peerIDs []string
 	g.agents.Range(func(key, value any) bool {
-		pid, _ := key.(string)
-		ac, _ := value.(*AgentConn)
-		if ac == nil || !ac.authenticated {
-			return true
+		if ac := value.(*AgentConn); ac.authenticated {
+			peerIDs = append(peerIDs, key.(string))
 		}
+		return true
+	})
+	visible := authorize(auth.PermDeviceView, peerIDs)
+	nodes := []map[string]interface{}{}
+	for _, pid := range peerIDs {
+		v, ok := g.agents.Load(pid)
+		if !ok || !visible[pid] {
+			continue
+		}
+		ac := v.(*AgentConn)
 		nodes = append(nodes, map[string]interface{}{
 			"_id":     "node//" + ac.meshNodeID,
 			"name":    ac.hostname,
@@ -145,8 +130,7 @@ func (g *Gateway) sendNodesList(ctx context.Context, conn *websocket.Conn, userI
 				"caps": 0,
 			},
 		})
-		return true
-	})
+	}
 	resp := map[string]interface{}{
 		"action": "nodes",
 		"nodes":  nodes,
@@ -167,19 +151,5 @@ func (g *Gateway) peerIDFromNode(nodeKey string) string {
 		}
 		return true
 	})
-	if found != "" {
-		return found
-	}
-	peers, _ := g.db.ListPeers(false)
-	for _, p := range peers {
-		if stored, _ := g.db.GetConfig("mesh_node_id_" + p.ID); stored == raw || stored == nodeKey {
-			return p.ID
-		}
-	}
-	return ""
-}
-
-// ControlAuthBridge builds x-meshauth header value from JWT.
-func ControlAuthBridge(jwt string, user *auth.Claims) string {
-	return jwt
+	return found
 }

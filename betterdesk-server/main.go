@@ -565,7 +565,6 @@ func main() {
 			}
 			meshGw.SetBlocklist(blocklist)
 			meshGw.SetAuditLogger(auditLogger)
-			meshGw.SetJWTManager(jwtManager)
 			meshGw.SetVersion(Version)
 			// Web cert hash: MESH_WEB_CERT_FILE (public TLS agents see, e.g. proxy LE)
 			// takes priority over TLS_CERT (may be internal/signal-only).

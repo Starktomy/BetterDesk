@@ -3,6 +3,7 @@
  */
 
 const express = require('express');
+const { pipeline } = require('stream/promises');
 const router = express.Router();
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { rdClientPageLimiter, meshActionLimiter } = require('../middleware/rateLimiter');
@@ -10,6 +11,7 @@ const { proxyToGo } = require('../lib/goApiProxy');
 const betterdeskApi = require('../services/betterdeskApi');
 const db = require('../services/database');
 const deviceGroupService = require('../services/deviceGroupService');
+const { identityFromRequest, panelTrustHeaders, HEADER } = require('../services/panelTrust');
 
 async function rejectIfMeshDeviceOutOfScope(req, res, deviceId) {
     const scope = await deviceGroupService.authorizeUserDeviceAccess(db, req.session.user, deviceId);
@@ -78,16 +80,14 @@ router.post('/api/mesh/devices/:id/desktop', rdClientPageLimiter, async (req, re
                 if (!result.data?.valid) {
                     return res.status(403).json({ error: 'Invalid or expired guest link' });
                 }
-                if (result.data.view_only && !req.query.view_only) {
-                    req.query.view_only = '1';
-                }
             }
         } catch {
             return res.status(403).json({ error: 'Invalid or expired share link' });
         }
         return proxyToGo(betterdeskApi.apiClient, req, res, 'POST', () => {
-            const qs = new URLSearchParams(req.query).toString();
-            return `/mesh/devices/${encodeURIComponent(id)}/desktop` + (qs ? `?${qs}` : '');
+            const query = new URLSearchParams(req.query);
+            if (guest) query.set('guest', guest);
+            return `/mesh/devices/${encodeURIComponent(id)}/desktop?${query}`;
         });
     }
 
@@ -145,20 +145,45 @@ router.post('/api/mesh/devices/:id/group', requireAuth, requirePermission('serve
     return proxyToGo(betterdeskApi.apiClient, req, res, 'POST', () => `/mesh/devices/${encodeURIComponent(id)}/group`, req.body);
 });
 
+async function proxyMeshRecordings(req, res, path, download = false) {
+    const headers = panelTrustHeaders(identityFromRequest(req), 'GET', `/api${path}`);
+    if (!headers[HEADER]) {
+        return res.status(503).json({ error: 'Panel trust bridge is unavailable' });
+    }
+    if (download && req.headers.range) headers.Range = req.headers.range;
+    try {
+        const response = await betterdeskApi.apiClient.get(path, { headers, responseType: download ? 'stream' : 'json' });
+        if (!download) return res.status(response.status).json(response.data);
+        for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+            if (response.headers[name]) res.set(name, response.headers[name]);
+        }
+        res.status(response.status);
+        await pipeline(response.data, res);
+    } catch (err) {
+        if (download) err.response?.data?.destroy?.();
+        if (!res.headersSent && !res.destroyed) {
+            res.status(err.response?.status || 502).json({ error: 'Could not read mesh recordings' });
+        }
+    }
+}
+
 router.get('/api/mesh/recordings', requireAuth, requirePermission('device.view'), async (req, res) => {
-    return proxyToGo(betterdeskApi.apiClient, req, res, 'GET', '/mesh/recordings');
+    return proxyMeshRecordings(req, res, '/mesh/recordings');
 });
 
 router.get('/api/mesh/recordings/:id', requireAuth, requirePermission('device.connect'), async (req, res) => {
     const id = req.params.id;
-    return proxyToGo(betterdeskApi.apiClient, req, res, 'GET', () => `/mesh/recordings/${encodeURIComponent(id)}`);
+    if (!/^[A-Za-z0-9_-]+\.mcrec$/i.test(id)) {
+        return res.status(404).json({ error: 'Recording not found' });
+    }
+    return proxyMeshRecordings(req, res, `/mesh/recordings/${encodeURIComponent(id)}`, true);
 });
 
 router.get('/api/session/recordings', requireAuth, requirePermission('device.view'), async (req, res) => {
-    return proxyToGo(betterdeskApi.apiClient, req, res, 'GET', '/session/recordings');
+    return proxyMeshRecordings(req, res, '/session/recordings');
 });
 
-router.post('/api/mesh/devices/:id/exec', meshActionLimiter, requireAuth, requirePermission('device.connect'), async (req, res) => {
+router.post('/api/mesh/devices/:id/exec', meshActionLimiter, requireAuth, requirePermission('mesh.terminal'), async (req, res) => {
     const id = req.params.id;
     if (await rejectIfMeshDeviceOutOfScope(req, res, id)) return;
     return proxyToGo(betterdeskApi.apiClient, req, res, 'POST', () => `/mesh/devices/${encodeURIComponent(id)}/exec`, req.body);

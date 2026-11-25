@@ -67,11 +67,15 @@ func (s *Server) buildRustDeskDeviceGroupsFromContext(
 				if !panelGroupAllowedForUser(g, user, role, userGroupGUIDs) {
 					continue
 				}
+				peerIDs, err := s.panelGroupPeerIDs(g, peerByID, visiblePeer)
+				if err != nil {
+					continue
+				}
 				groups = append(groups, rustDeskGroup{
 					guid:    g.GUID,
 					name:    g.Name,
 					note:    g.Note,
-					peerIDs: s.panelGroupPeerIDs(g, peerByID, visiblePeer),
+					peerIDs: peerIDs,
 				})
 			}
 		}
@@ -81,8 +85,8 @@ func (s *Server) buildRustDeskDeviceGroupsFromContext(
 			log.Printf("[api] ListFolders user=%s: %v", user.Username, folderErr)
 		}
 		for _, folder := range folders {
-			allowedUsers, allowedGroups, _ := s.panelStore.FolderGroupAccess(folder.ID)
-			if !panelAccessAllowed(user, role, userGroupGUIDs, allowedUsers, allowedGroups) {
+			allowedUsers, allowedGroups, err := s.panelStore.FolderGroupAccess(folder.ID)
+			if err != nil || !panelAccessAllowed(user, role, userGroupGUIDs, allowedUsers, allowedGroups) {
 				continue
 			}
 			var peerIDs []string
@@ -171,7 +175,7 @@ func panelAccessAllowed(user *db.User, role string, userGroupGUIDs map[string]bo
 	return false
 }
 
-func (s *Server) panelGroupPeerIDs(g db.PanelDeviceGroup, peerByID map[string]*db.Peer, visiblePeer map[string]bool) []string {
+func (s *Server) panelGroupPeerIDs(g db.PanelDeviceGroup, peerByID map[string]*db.Peer, visiblePeer map[string]bool) ([]string, error) {
 	seen := make(map[string]bool)
 	var ids []string
 	add := func(id string) {
@@ -190,10 +194,12 @@ func (s *Server) panelGroupPeerIDs(g db.PanelDeviceGroup, peerByID map[string]*d
 	}
 
 	if s.panelStore != nil {
-		if members, err := s.panelStore.ListDeviceGroupMemberPeerIDs(g.ID); err == nil {
-			for _, id := range members {
-				add(id)
-			}
+		members, err := s.panelStore.ListDeviceGroupMemberPeerIDs(g.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range members {
+			add(id)
 		}
 	}
 
@@ -205,7 +211,7 @@ func (s *Server) panelGroupPeerIDs(g db.PanelDeviceGroup, peerByID map[string]*d
 			}
 		}
 	}
-	return ids
+	return ids, nil
 }
 
 func peerHasTag(p *db.Peer, tagLower string) bool {
@@ -225,49 +231,34 @@ func (s *Server) rustDeskVisiblePeerSet(user *db.User, role string, peerByID map
 	if s.panelStore == nil {
 		return nil
 	}
+	if user == nil {
+		return map[string]bool{}
+	}
 
 	restrictedDefault := s.panelStore.DeviceScopeDefaultRestricted()
 
 	var peerGrants []string
-	if user != nil && user.ID > 0 {
-		if grants, err := s.panelStore.ListUserPeerGrants(user.ID); err == nil {
-			peerGrants = grants
+	var err error
+	if user.ID > 0 {
+		peerGrants, err = s.panelStore.ListUserPeerGrants(user.ID)
+		if err != nil {
+			return map[string]bool{}
 		}
 	}
 
 	panelGroups, err := s.panelStore.ListPanelDeviceGroups()
 	if err != nil {
-		return nil
+		return map[string]bool{}
 	}
 	userGroupGUIDs := s.consoleUserGroupGUIDs(user.ID)
 
-	assignments := map[string]int64{}
-	if a, err := s.panelStore.ListFolderAssignments(); err == nil {
-		assignments = a
+	assignments, err := s.panelStore.ListFolderAssignments()
+	if err != nil {
+		return map[string]bool{}
 	}
-
-	hasRestricted := false
-	for _, g := range panelGroups {
-		if len(g.AllowedUsers) > 0 || len(g.AllowedGroupGUIDs) > 0 {
-			hasRestricted = true
-			break
-		}
-	}
-	if !hasRestricted {
-		folders, _ := s.panelStore.ListFolders()
-		for _, folder := range folders {
-			allowedUsers, allowedGroups, _ := s.panelStore.FolderGroupAccess(folder.ID)
-			if len(allowedUsers) > 0 || len(allowedGroups) > 0 {
-				hasRestricted = true
-				break
-			}
-		}
-	}
-	if !hasRestricted && len(peerGrants) == 0 {
-		if restrictedDefault {
-			return map[string]bool{}
-		}
-		return nil
+	folders, err := s.panelStore.ListFolders()
+	if err != nil {
+		return map[string]bool{}
 	}
 
 	allowed := make(map[string]bool)
@@ -276,7 +267,10 @@ func (s *Server) rustDeskVisiblePeerSet(user *db.User, role string, peerByID map
 		if len(g.AllowedUsers) == 0 && len(g.AllowedGroupGUIDs) == 0 {
 			continue
 		}
-		peerIDs := s.panelGroupPeerIDs(g, peerByID, nil)
+		peerIDs, err := s.panelGroupPeerIDs(g, peerByID, nil)
+		if err != nil {
+			return map[string]bool{}
+		}
 		target := restricted
 		if panelGroupAllowedForUser(g, user, role, userGroupGUIDs) {
 			target = allowed
@@ -286,9 +280,11 @@ func (s *Server) rustDeskVisiblePeerSet(user *db.User, role string, peerByID map
 		}
 	}
 
-	folders, _ := s.panelStore.ListFolders()
 	for _, folder := range folders {
-		allowedUsers, allowedGroups, _ := s.panelStore.FolderGroupAccess(folder.ID)
+		allowedUsers, allowedGroups, err := s.panelStore.FolderGroupAccess(folder.ID)
+		if err != nil {
+			return map[string]bool{}
+		}
 		if len(allowedUsers) == 0 && len(allowedGroups) == 0 {
 			continue
 		}
@@ -312,6 +308,9 @@ func (s *Server) rustDeskVisiblePeerSet(user *db.User, role string, peerByID map
 
 	if restrictedDefault {
 		return allowed
+	}
+	if len(restricted) == 0 {
+		return nil
 	}
 
 	visible := make(map[string]bool)

@@ -80,7 +80,7 @@ type Server struct {
 	auditWriteLimiter *ratelimit.IPLimiter
 	// Short-code pairing: redeem is public and guessable, so it gets its own budget
 	// separate from enrollment (a paired device must not consume the enrollment budget).
-	pairingLimiter *ratelimit.IPLimiter
+	pairingLimiter    *ratelimit.IPLimiter
 	keyPair           *crypto.KeyPair // Ed25519 keypair for signing
 	telemetryPrivate  [32]byte        // X25519 private key for telemetry envelopes
 	telemetryPublic   [32]byte        // X25519 public key for telemetry envelopes
@@ -130,7 +130,7 @@ func New(cfg *config.Config, database db.Database, peerMap *peer.Map, relaySrv *
 		auditWriteLimiter: ratelimit.NewIPLimiter(60, 1*time.Minute, 5*time.Minute),  // M6: public audit writes
 		// 10/min per IP: a person redeems once; a script brute-forcing 30 bits would
 		// need ~10^7 minutes at this rate.
-		pairingLimiter: ratelimit.NewIPLimiter(10, 1*time.Minute, 5*time.Minute),
+		pairingLimiter:    ratelimit.NewIPLimiter(10, 1*time.Minute, 5*time.Minute),
 		clientTFASessions: newTFASessionStore(),
 		secureClientKeys:  make(map[string][32]byte),
 		panelNonces:       newPanelNonceCache(),
@@ -651,10 +651,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/mesh/groups", s.requirePermission(auth.PermServerConfig, s.handleMeshGroupsList))
 	mux.HandleFunc("POST /api/mesh/groups", s.requirePermission(auth.PermServerConfig, s.handleMeshGroupsSave))
 	mux.HandleFunc("GET /api/mesh/download.msh", s.requirePermission(auth.PermServerConfig, s.handleMeshDownloadMSH))
-	mux.HandleFunc("POST /api/mesh/devices/{id}/desktop", s.requirePermission(auth.PermDeviceConnect, s.handleMeshDesktopTunnel))
-	mux.HandleFunc("POST /api/mesh/devices/{id}/terminal", s.requirePermission(auth.PermMeshTerminal, s.handleMeshTerminalTunnel))
-	mux.HandleFunc("POST /api/mesh/devices/{id}/files", s.requirePermission(auth.PermMeshFiles, s.handleMeshFilesTunnel))
-	mux.HandleFunc("POST /api/mesh/devices/{id}/share", s.requireRole(auth.RoleOperator, s.handleMeshShareCreate))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/desktop", s.requirePermission(auth.PermDeviceConnect, s.requireMeshDevice(s.handleMeshDesktopTunnel)))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/terminal", s.requirePermission(auth.PermMeshTerminal, s.requireMeshDevice(s.handleMeshTerminalTunnel)))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/files", s.requirePermission(auth.PermMeshFiles, s.requireMeshDevice(s.handleMeshFilesTunnel)))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/share", s.requireRole(auth.RoleOperator, s.requireMeshDevice(s.handleMeshShareCreate)))
 	mux.HandleFunc("GET /api/mesh/share/validate", s.handleMeshShareValidate)
 
 	// Guest Access Links (temporary RdClient allowlist links)
@@ -665,18 +665,19 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/guest/access-links/consume", s.requirePermission(auth.PermGuestCreate, s.handleGuestAccessConsume))
 	mux.HandleFunc("POST /api/guest/access-links/events", s.requirePermission(auth.PermGuestCreate, s.handleGuestAccessEvent))
 	mux.HandleFunc("GET /api/guest/access-links/peers", s.handleGuestAccessPeers)
-	mux.HandleFunc("POST /api/mesh/devices/{id}/tcp", s.requirePermission(auth.PermDeviceConnect, s.handleMeshTcpRelay))
-	mux.HandleFunc("POST /api/mesh/devices/{id}/udp", s.requirePermission(auth.PermDeviceConnect, s.handleMeshUdpRelay))
-	mux.HandleFunc("POST /api/mesh/devices/{id}/power", s.requirePermission(auth.PermMeshPower, s.handleMeshPower))
-	mux.HandleFunc("POST /api/mesh/devices/{id}/group", s.requirePermission(auth.PermServerConfig, s.handleMeshDeviceGroup))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/tcp", s.requirePermission(auth.PermDeviceConnect, s.requireMeshDevice(s.handleMeshTcpRelay)))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/udp", s.requirePermission(auth.PermDeviceConnect, s.requireMeshDevice(s.handleMeshUdpRelay)))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/power", s.requirePermission(auth.PermMeshPower, s.requireMeshDevice(s.handleMeshPower)))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/group", s.requirePermission(auth.PermServerConfig, s.requireMeshDevice(s.handleMeshDeviceGroup)))
 	mux.HandleFunc("GET /api/mesh/recordings", s.requirePermission(auth.PermDeviceView, s.handleMeshRecordingsList))
 	mux.HandleFunc("GET /api/mesh/recordings/{id}", s.requirePermission(auth.PermDeviceConnect, s.handleMeshRecordingDownload))
 	mux.HandleFunc("GET /api/session/recordings", s.requirePermission(auth.PermDeviceView, s.handleSessionRecordingsList))
-	mux.HandleFunc("POST /api/mesh/devices/{id}/exec", s.requireRole(auth.RoleOperator, s.handleMeshExec))
-	mux.HandleFunc("POST /api/peers/{id}/exec", s.requireRole(auth.RoleOperator, s.handleUnifiedPeerExec))
+	mux.HandleFunc("POST /api/mesh/devices/{id}/exec", s.requirePermission(auth.PermMeshTerminal, s.requireMeshDevice(s.handleMeshExec)))
+	mux.HandleFunc("POST /api/peers/{id}/exec", s.requireRole(auth.RoleOperator, s.requireMeshDevice(s.handleUnifiedPeerExec)))
 
 	if s.meshGw != nil {
 		s.meshGw.RegisterRoutes(mux)
+		mux.HandleFunc("GET /control.ashx", s.requirePermission(auth.PermDeviceView, s.handleMeshControl))
 	}
 
 	// BetterDesk desktop client management WebSocket (no API key — device auth)
@@ -846,7 +847,8 @@ func (s *Server) handleHealthDetail(w http.ResponseWriter, r *http.Request) {
 // handlePubKey returns the server's Ed25519 public key in base64 format.
 // This is the "key" value that RustDesk clients use for E2E encryption verification.
 // Public endpoint — no authentication required.
-func (s *Server) handlePubKey(w http.ResponseWriter, r *http.Request) {	if s.keyPair == nil {
+func (s *Server) handlePubKey(w http.ResponseWriter, r *http.Request) {
+	if s.keyPair == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": "Server keypair not initialized",
 		})

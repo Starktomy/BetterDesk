@@ -109,7 +109,10 @@ func (c *ConsoleAuthDB) ListPanelDeviceGroups() ([]PanelDeviceGroup, error) {
 		if g.SourceType == "" {
 			g.SourceType = "manual"
 		}
-		g.AllowedUsers, g.AllowedGroupGUIDs, _ = c.loadDeviceGroupAccess(g.ID)
+		g.AllowedUsers, g.AllowedGroupGUIDs, err = c.loadDeviceGroupAccess(g.ID)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, g)
 	}
 	return out, rows.Err()

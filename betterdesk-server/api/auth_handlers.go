@@ -1189,10 +1189,16 @@ func (s *Server) authenticateRequest(r *http.Request) (username, role, orgID str
 		return claim.Subject, role, "", true
 	}
 
+	bearer := r.Header.Get("Authorization")
+	meshControl := r.URL.Path == "/control.ashx"
+	if meshControl && r.Header.Get("X-Meshauth") != "" {
+		token, _, _ := strings.Cut(r.Header.Get("X-Meshauth"), ",")
+		bearer = "Bearer " + token
+	}
 	// 1. Bearer token — opaque client session (RustDesk desktop) or JWT (panel/API)
-	if bearer := r.Header.Get("Authorization"); len(bearer) > 7 && strings.EqualFold(bearer[:7], "Bearer ") {
+	if len(bearer) > 7 && strings.EqualFold(bearer[:7], "Bearer ") {
 		token := strings.TrimSpace(bearer[7:])
-		if isOpaqueClientToken(token) {
+		if !meshControl && isOpaqueClientToken(token) {
 			if username, role, ok := s.authenticateClientSession(token); ok {
 				return username, role, "", true
 			}
@@ -1204,6 +1210,9 @@ func (s *Server) authenticateRequest(r *http.Request) (username, role, orgID str
 				return claims.Sub, claims.Role, claims.OrgID, true
 			}
 		}
+	}
+	if meshControl {
+		return "", "", "", false
 	}
 
 	// 2. X-API-Key header (query param removed — BD-2026-005: query transport leaks keys in logs/proxies)
@@ -1267,12 +1276,6 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// control.ashx uses x-meshauth / Bearer inside handleControlWS.
-		if path == "/control.ashx" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// Public endpoints — no auth required.
 		//
 		// SECURITY (audit H1/H5, 2026-11-13):

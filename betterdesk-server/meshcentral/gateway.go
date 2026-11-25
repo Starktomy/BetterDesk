@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/unitronix/betterdesk-server/audit"
-	"github.com/unitronix/betterdesk-server/auth"
 	"github.com/unitronix/betterdesk-server/config"
 	"github.com/unitronix/betterdesk-server/db"
 	"github.com/unitronix/betterdesk-server/events"
@@ -27,7 +26,6 @@ type Gateway struct {
 	eventBus  *events.Bus
 	auditLog  *audit.Logger
 	blocklist *security.Blocklist
-	jwt       *auth.JWTManager
 	limiter   *ratelimit.IPLimiter
 	cookies   *CookieCodec
 	creds     *AgentCredentials
@@ -82,9 +80,6 @@ func (g *Gateway) SetBlocklist(bl *security.Blocklist) { g.blocklist = bl }
 
 // SetAuditLogger attaches audit logger.
 func (g *Gateway) SetAuditLogger(al *audit.Logger) { g.auditLog = al }
-
-// SetJWTManager attaches JWT manager for control channel auth.
-func (g *Gateway) SetJWTManager(jm *auth.JWTManager) { g.jwt = jm }
 
 // SetVersion sets build version for logs.
 func (g *Gateway) SetVersion(v string) { g.version = v }
@@ -173,7 +168,6 @@ func (g *Gateway) Stop() {
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/agent.ashx", g.handleAgentWS)
 	mux.HandleFunc("/meshrelay.ashx", g.handleRelayWS)
-	mux.HandleFunc("/control.ashx", g.handleControlWS)
 	mux.HandleFunc("/bettercore.js", g.handleBetterCoreJS)
 	mux.HandleFunc("/meshcore.js", g.handleBetterCoreJS) // legacy alias
 }

@@ -7,9 +7,65 @@ import (
 	"strings"
 
 	"github.com/unitronix/betterdesk-server/audit"
+	"github.com/unitronix/betterdesk-server/auth"
 	"github.com/unitronix/betterdesk-server/db"
 	"github.com/unitronix/betterdesk-server/meshcentral"
 )
+
+func (s *Server) visibleMeshPeers(r *http.Request, ids []string) map[string]bool {
+	visible := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return visible
+	}
+	role := getRoleFromCtx(r)
+	if auth.IsSuperAdminRole(role) || role == auth.RoleGlobalAdmin || role == auth.RoleServerAdmin {
+		for _, id := range ids {
+			visible[id] = true
+		}
+		return visible
+	}
+	seen := make(map[string]bool, len(ids))
+	uniqueIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != "" && !seen[id] {
+			uniqueIDs = append(uniqueIDs, id)
+			seen[id] = true
+		}
+	}
+	peers, err := s.db.GetPeersByIDs(uniqueIDs)
+	if err != nil {
+		return visible
+	}
+	user := s.rustDeskUserForGroups(r, getUsernameFromCtx(r), role)
+	scope := s.rustDeskVisiblePeerSet(user, role, peers)
+	for id, peer := range peers {
+		if peer != nil && !peer.SoftDeleted && (scope == nil || scope[id]) {
+			visible[id] = true
+		}
+	}
+	return visible
+}
+
+func (s *Server) requireMeshDevice(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if !s.visibleMeshPeers(r, []string{id})[id] {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Device not found"})
+			return
+		}
+		handler(w, r)
+	}
+}
+
+func (s *Server) handleMeshControl(w http.ResponseWriter, r *http.Request) {
+	s.meshGw.HandleControlWS(w, r, getUsernameFromCtx(r), func(permission string, ids []string) map[string]bool {
+		granted, err := s.requestPermission(r, permission)
+		if err != nil || !granted {
+			return nil
+		}
+		return s.visibleMeshPeers(r, ids)
+	})
+}
 
 func (s *Server) handleMeshServerID(w http.ResponseWriter, r *http.Request) {
 	if s.meshGw == nil {
@@ -119,6 +175,9 @@ func (s *Server) handleMeshDesktopTunnel(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	guestToken := strings.TrimSpace(r.URL.Query().Get("guest"))
+	if guestToken == "" {
+		guestToken = strings.TrimSpace(r.URL.Query().Get("t"))
+	}
 	if guestToken != "" {
 		grant, err := s.guestAccessStore().Validate(guestToken, peerID)
 		if err != nil {
@@ -423,21 +482,25 @@ func (s *Server) handleUnifiedPeerExec(w http.ResponseWriter, r *http.Request) {
 	}
 	username := usernameFromRequest(r)
 	if s.meshGw != nil && s.meshGw.IsConnected(peerID) {
-		if err := s.meshGw.SendRunCommand(peerID, username, body.Command, body.Shell); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"transport": "mesh", "status": "sent"})
+		s.requirePermission(auth.PermMeshTerminal, func(w http.ResponseWriter, _ *http.Request) {
+			if err := s.meshGw.SendRunCommand(peerID, username, body.Command, body.Shell); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"transport": "mesh", "status": "sent"})
+		})(w, r)
 		return
 	}
 	if s.cdapGw != nil && s.cdapGw.IsConnected(peerID) {
-		err := s.cdapGw.SendCommandJSON(r.Context(), peerID, "exec-"+peerID, "shell", "run",
-			map[string]string{"command": body.Command}, username, "unified exec")
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"transport": "cdap", "status": "sent"})
+		s.requirePermission(auth.PermCDAPTerminal, func(w http.ResponseWriter, r *http.Request) {
+			err := s.cdapGw.SendCommandJSON(r.Context(), peerID, "exec-"+peerID, "shell", "run",
+				map[string]string{"command": body.Command}, username, "unified exec")
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"transport": "cdap", "status": "sent"})
+		})(w, r)
 		return
 	}
 	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device not connected via mesh or cdap"})
@@ -473,7 +536,18 @@ func (s *Server) handleMeshRecordingsList(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"recordings": list})
+	ids := make([]string, 0, len(list))
+	for _, recording := range list {
+		ids = append(ids, recording.PeerID)
+	}
+	visible := s.visibleMeshPeers(r, ids)
+	filtered := list[:0]
+	for _, recording := range list {
+		if visible[recording.PeerID] {
+			filtered = append(filtered, recording)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"recordings": filtered})
 }
 
 func (s *Server) handleMeshRecordingDownload(w http.ResponseWriter, r *http.Request) {
@@ -482,6 +556,11 @@ func (s *Server) handleMeshRecordingDownload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	id := r.PathValue("id")
+	peerID := meshcentral.MeshRecordingPeerID(id)
+	if !s.visibleMeshPeers(r, []string{peerID})[peerID] {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording not found"})
+		return
+	}
 	path, err := meshcentral.MeshRecordingPath(s.meshDataDir(), id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording not found"})
@@ -505,7 +584,16 @@ func (s *Server) handleSessionRecordingsList(w http.ResponseWriter, r *http.Requ
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		list = meshList
+		ids := make([]string, 0, len(meshList))
+		for _, recording := range meshList {
+			ids = append(ids, recording.PeerID)
+		}
+		visible := s.visibleMeshPeers(r, ids)
+		for _, recording := range meshList {
+			if visible[recording.PeerID] {
+				list = append(list, recording)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"recordings": list,

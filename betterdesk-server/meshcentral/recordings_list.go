@@ -38,7 +38,7 @@ func ListMeshRecordings(dataDir string) ([]MeshRecording, error) {
 			continue
 		}
 		info, err := e.Info()
-		if err != nil {
+		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
 		rec := MeshRecording{
@@ -48,26 +48,43 @@ func ListMeshRecordings(dataDir string) ([]MeshRecording, error) {
 			Modified:  info.ModTime().Format(time.RFC3339),
 			Transport: "mesh",
 		}
-		parts := strings.SplitN(e.Name(), "_", 3)
-		if len(parts) >= 1 {
-			rec.PeerID = strings.ReplaceAll(parts[0], "_", "")
-		}
-		if len(parts) >= 2 {
-			rec.SessionType = parts[1]
-		}
+		rec.PeerID, rec.SessionType = meshRecordingIdentity(e.Name())
 		out = append(out, rec)
 	}
 	return out, nil
 }
 
+func meshRecordingIdentity(id string) (peerID, sessionType string) {
+	stem := strings.TrimSuffix(id, filepath.Ext(id))
+	parts := strings.Split(stem, "_")
+	if len(parts) < 4 {
+		return "", ""
+	}
+	end := len(parts) - 3
+	if _, err := time.Parse("20060102-150405", parts[end+1]); err != nil {
+		return "", ""
+	}
+	return strings.Join(parts[:end], "_"), parts[end]
+}
+
+// MeshRecordingPeerID returns the device ID stored in the recording filename.
+func MeshRecordingPeerID(id string) string {
+	peerID, _ := meshRecordingIdentity(id)
+	return peerID
+}
+
 // MeshRecordingPath resolves a recording file path by id (filename).
 func MeshRecordingPath(dataDir, id string) (string, error) {
-	if id == "" || strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) {
+	if !strings.HasSuffix(strings.ToLower(id), ".mcrec") || strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) {
 		return "", os.ErrInvalid
 	}
 	path := filepath.Join(meshRecordingsDir(dataDir), id)
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Lstat(path)
+	if err != nil {
 		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", os.ErrInvalid
 	}
 	return path, nil
 }

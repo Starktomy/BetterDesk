@@ -6,6 +6,7 @@
 const WebSocket = require('ws');
 const config = require('../config/config');
 const { enforceOrigin } = require('../middleware/wsOrigin');
+const { identityFromRequest, panelTrustHeaders, HEADER } = require('./panelTrust');
 const { registerUpgradeHandler } = require('./wsUpgradeRouter');
 
 const MESH_PATHS = new Set([
@@ -33,12 +34,13 @@ function initMeshAshxProxy(server, sessionMiddleware) {
 
             if (!enforceOrigin(req, socket, label)) return;
 
-            const connect = () => {
+            const connect = (authHeaders = {}) => {
                 wss.handleUpgrade(req, socket, head, (browserWs) => {
                     const target = goWsBase() + url.pathname + (url.search || '');
                     const goWs = new WebSocket(target, {
                         headers: {
                             'x-forwarded-for': req.socket?.remoteAddress || '',
+                            ...authHeaders,
                         },
                     });
 
@@ -72,7 +74,13 @@ function initMeshAshxProxy(server, sessionMiddleware) {
                         socket.destroy();
                         return;
                     }
-                    connect();
+                    const headers = panelTrustHeaders(identityFromRequest(req), 'GET', url.pathname);
+                    if (!headers[HEADER]) {
+                        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+                        socket.destroy();
+                        return;
+                    }
+                    connect(headers);
                 });
             } else {
                 connect();
