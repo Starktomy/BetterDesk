@@ -2,9 +2,10 @@
  * BetterDesk Console — Chat 2.0 Client
  *
  * Features:
- *  - E2E encryption (ECDH P-256 + AES-256-GCM) via chatCrypto.js
+ *  - Public key exchange via chatCrypto.js. Messages and files are not
+ *    encrypted yet: the server stores and relays them in plain text.
  *  - 1:1 and group conversations
- *  - File sharing (encrypted, up to 50MB)
+ *  - File sharing (up to 50MB)
  *  - Typing indicator, read receipts, online presence
  *  - Message search, push notifications, emoji reactions
  *  - Quick commands (/screenshot, /restart, /lock, /deploy)

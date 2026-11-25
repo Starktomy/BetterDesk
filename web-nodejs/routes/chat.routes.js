@@ -11,14 +11,44 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
+const { uploadLimiter, fileAccessLimiter } = require('../middleware/rateLimiter');
 
 // File upload config — max 50MB, store in data/chat-files/
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'chat-files');
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+// The 128-bit random ID is the only thing that lets a participant fetch a
+// file, so a request must name the whole ID and never a prefix of it.
+const STORED_NAME_RE = /^([a-f0-9]{32})(\.[a-z0-9]{1,10})?$/;
 
 if (!fs.existsSync(UPLOAD_DIR)) {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
+function safeExtension(originalName) {
+    const ext = path.extname(String(originalName || '')).toLowerCase();
+    return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '';
+}
+
+async function resolveChatFile(requested) {
+    const match = STORED_NAME_RE.exec(String(requested || ''));
+    if (!match) return null;
+    let name = match[0];
+    if (!match[2]) {
+        // Links created before the extension was part of the URL carry only
+        // the ID. IDs are unique, so at most one stored file can match.
+        const id = match[1];
+        const entries = await fs.promises.readdir(UPLOAD_DIR);
+        name = entries.find((entry) => entry === id || entry.startsWith(`${id}.`));
+        if (!name) return null;
+    }
+    const filePath = path.join(UPLOAD_DIR, name);
+    try {
+        const stat = await fs.promises.lstat(filePath);
+        return stat.isFile() ? filePath : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 const upload = multer({
@@ -26,8 +56,7 @@ const upload = multer({
         destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
         filename: (_req, file, cb) => {
             const id = crypto.randomBytes(16).toString('hex');
-            const ext = path.extname(file.originalname).slice(0, 10);
-            cb(null, `${id}${ext}`);
+            cb(null, `${id}${safeExtension(file.originalname)}`);
         },
     }),
     limits: { fileSize: MAX_FILE_SIZE },
@@ -47,8 +76,9 @@ router.get('/chat', requireAuth, (req, res) => {
 
 // ========== API Routes ==========
 
-// Upload encrypted file
-router.post('/api/chat/upload', requireAuth, upload.single('file'), (req, res) => {
+// Upload a chat attachment. Files are stored as sent: the browser does not
+// encrypt them, so anyone with server access can read them.
+router.post('/api/chat/upload', uploadLimiter, requireAuth, requirePermission('chat.access'), upload.single('file'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ success: false, error: 'No file provided' });
     }
@@ -58,30 +88,26 @@ router.post('/api/chat/upload', requireAuth, upload.single('file'), (req, res) =
         file_id: fileId,
         filename: req.file.filename,
         size: req.file.size,
-        url: `/api/chat/files/${fileId}`,
+        url: `/api/chat/files/${req.file.filename}`,
     });
 });
 
 // Download file
-router.get('/api/chat/files/:fileId', requireAuth, (req, res) => {
-    const fileId = req.params.fileId.replace(/[^a-f0-9]/gi, '');
-    if (!fileId) return res.status(400).json({ success: false, error: 'Invalid file ID' });
-
-    // Find file by ID prefix
-    const files = fs.readdirSync(UPLOAD_DIR).filter(f => f.startsWith(fileId));
-    if (files.length === 0) {
-        return res.status(404).json({ success: false, error: 'File not found' });
+router.get('/api/chat/files/:fileId', fileAccessLimiter, requireAuth, requirePermission('chat.access'), async (req, res) => {
+    try {
+        const filePath = await resolveChatFile(req.params.fileId);
+        if (!filePath) {
+            return res.status(404).json({ success: false, error: 'File not found' });
+        }
+        res.download(filePath);
+    } catch (err) {
+        console.error('Chat file download error:', err.message);
+        res.status(500).json({ success: false, error: 'File not available' });
     }
-    const filePath = path.join(UPLOAD_DIR, files[0]);
-    // Verify path traversal protection
-    if (!filePath.startsWith(UPLOAD_DIR)) {
-        return res.status(403).json({ success: false, error: 'Forbidden' });
-    }
-    res.download(filePath);
 });
 
 // Search messages via Go server proxy
-router.get('/api/chat/search', requireAuth, async (req, res) => {
+router.get('/api/chat/search', requireAuth, requirePermission('chat.access'), async (req, res) => {
     try {
         const { apiClient } = require('../services/betterdeskApi');
         const query = String(req.query.q || '').slice(0, 200);
