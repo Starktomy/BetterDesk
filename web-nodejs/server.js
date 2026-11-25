@@ -71,6 +71,7 @@ const { resolveRedirectHost, buildSafeRedirectUrl } = require('./lib/redirectHos
 const { safeJsonScript } = require('./lib/safeJsonScript');
 const { escapeHtml } = require('./lib/escapeHtml');
 const { createUploadsStatic } = require('./lib/uploadsStatic');
+const { sessionCookieOptions } = require('./lib/sessionCookie');
 
 // Create Express app
 const app = express();
@@ -161,12 +162,10 @@ const sessionMiddleware = session({
     rolling: true,
     saveUninitialized: false,
     store: persistentSessionStore,
-    cookie: {
-        secure: config.httpsEnabled,
-        httpOnly: true,
-        sameSite: 'lax',
+    cookie: sessionCookieOptions({
+        httpsEnabled: config.httpsEnabled,
         maxAge: config.sessionIdleTimeout
-    }
+    })
 });
 app.use(sessionMiddleware);
 // Server-side idle/absolute enforcement + IP-change audit for authenticated sessions.
@@ -656,14 +655,10 @@ async function startServer() {
                 console.warn('  → Session and CSRF cookies downgraded to non-Secure');
                 console.warn('  → Fix: check SSL_CERT_PATH and SSL_KEY_PATH in .env');
                 
-                // BD-2026-082: Downgrade cookie flags to match actual HTTP mode.
-                // Session middleware was initialised with secure:true at module
-                // load time.  Without this fixup, browsers would ignore all
-                // cookies and every request would fail CSRF validation.
-                if (sessionMiddleware && sessionMiddleware.options) {
-                    sessionMiddleware.options.cookie = sessionMiddleware.options.cookie || {};
-                    sessionMiddleware.options.cookie.secure = false;
-                }
+                // BD-2026-082: match cookie flags and headers to plain HTTP.
+                // The session cookie follows the connection by itself
+                // (lib/sessionCookie.js); the CSRF cookie and the security
+                // headers are configured once and need to be told.
                 csrfDowngradeToHttp();
                 securityMiddleware.downgradeToHttp();
                 
