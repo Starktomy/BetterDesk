@@ -53,6 +53,44 @@ func TestUnsignedHeartbeatCannotSpeakForAVerifiedDevice(t *testing.T) {
 	}
 }
 
+// The liveness update for an unsigned heartbeat must not write back an
+// address read before a concurrent signed heartbeat changed it, nor bind
+// the device's owner from a client session.
+func TestUnsignedHeartbeatLeavesAddressAndOwnerAlone(t *testing.T) {
+	srv, deviceID, deviceUUID, devicePriv, responsePub, _ := newConnectionModeFixture(t)
+	srv.heartbeatLimiter = nil
+	postHeartbeat(t, srv, deviceID, deviceUUID,
+		sealClientHeartbeat(t, srv, deviceID, devicePriv, 1, desktopIdentity(deviceID, deviceUUID, "normal"), responsePub))
+
+	// A signed heartbeat moved the device after the unsigned one read it.
+	if err := srv.db.UpdatePeerStatus(deviceID, "ONLINE", "192.0.2.77", "heartbeat"); err != nil {
+		t.Fatal(err)
+	}
+	user := &db.User{Username: "attacker", PasswordHash: "x", Role: "operator"}
+	if err := srv.db.CreateUser(user); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.db.CreateClientSession(&db.ClientSession{
+		TokenHash: "attacker-session", UserID: user.ID, ClientID: deviceID, ClientUUID: deviceUUID,
+		ExpiresAt: "2999-01-01 00:00:00",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	postPlainHeartbeat(t, srv, `{"id":"`+deviceID+`","uuid":"`+deviceUUID+`"}`, "203.0.113.66:4000")
+
+	peer, err := srv.db.GetPeer(deviceID)
+	if err != nil || peer == nil {
+		t.Fatalf("GetPeer: %v", err)
+	}
+	if peer.IP != "192.0.2.77" {
+		t.Fatalf("IP = %q, want the newer address kept", peer.IP)
+	}
+	if peer.User == "attacker" {
+		t.Fatal("unsigned heartbeat bound the device owner")
+	}
+}
+
 func TestStockRustDeskHeartbeatIsUnchanged(t *testing.T) {
 	srv := newHeartbeatBenchServer(t, 0, 0, 0)
 	postPlainHeartbeat(t, srv, `{"id":"`+benchHeartbeatPeer+`","cpu":42,"memory":1,"disk":1}`, "198.51.100.20:5000")

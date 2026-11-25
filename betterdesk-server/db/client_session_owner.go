@@ -22,6 +22,14 @@ func BindPeerOwner(database Database, clientID, clientUUID, username string) {
 	if err != nil || peer == nil {
 		return
 	}
+	// The client reports its own ID and UUID at login and in heartbeats, and
+	// nothing signs them. Anyone with an account could otherwise name another
+	// device's ID and take over its owner. Once the device has registered a
+	// UUID, the claim has to carry the same one.
+	if peer.UUID != "" && peer.UUID != clientUUID {
+		log.Printf("[db] bind peer owner %s → %s refused: UUID does not match the registered device", peer.ID, username)
+		return
+	}
 	if peer.User == username {
 		return
 	}

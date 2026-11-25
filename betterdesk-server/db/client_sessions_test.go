@@ -127,6 +127,29 @@ func TestBindPeerOwnerAndApplyActiveSessionOwner(t *testing.T) {
 	}
 }
 
+func TestBindPeerOwnerRefusesAnotherDevicesUUID(t *testing.T) {
+	database := openTestSQLiteDB(t)
+	defer database.Close()
+
+	if err := database.UpsertPeer(&Peer{ID: "P-VICTIM", UUID: "u-victim", Status: "ONLINE"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = database.UpdatePeerFields("P-VICTIM", map[string]string{"user": "owner"})
+
+	// A login naming the victim's ID with another (or no) UUID.
+	for _, claimedUUID := range []string{"u-attacker", ""} {
+		BindPeerOwner(database, "P-VICTIM", claimedUUID, "attacker")
+		if peer, _ := database.GetPeer("P-VICTIM"); peer == nil || peer.User != "owner" {
+			t.Fatalf("owner changed for claimed UUID %q: %#v", claimedUUID, peer)
+		}
+	}
+
+	BindPeerOwner(database, "P-VICTIM", "u-victim", "newowner")
+	if peer, _ := database.GetPeer("P-VICTIM"); peer == nil || peer.User != "newowner" {
+		t.Fatalf("matching UUID did not bind: %#v", peer)
+	}
+}
+
 func TestEnsureClientSessionsSchemaAfterDrop(t *testing.T) {
 	database := openTestSQLiteDB(t)
 	defer database.Close()

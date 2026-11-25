@@ -938,7 +938,7 @@ func (s *Server) handleClientHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	var responsePublicKey *[32]byte
 	envelopeVerified := false
-	statusIP := clientIP
+	downgraded := false
 	if len(body.BetterDeskEnvelope) > 0 {
 		opened, err := s.openTelemetryEnvelope(deviceID, body.BetterDeskEnvelope)
 		if err != nil {
@@ -961,9 +961,10 @@ func (s *Server) handleClientHeartbeat(w http.ResponseWriter, r *http.Request) {
 	} else if s.hasVerifiedIdentity(deviceID) {
 		// This device has proved itself with a signed envelope before, so a
 		// plain heartbeat for it may come from anyone who knows the ID. Keep
-		// it as a liveness signal only: no address change, no metrics and no
-		// unsigned telemetry. Stock RustDesk clients never reach this branch.
-		statusIP = peer.IP
+		// it as a liveness signal only: no address change, no metrics, no
+		// unsigned telemetry and no owner binding. Stock RustDesk clients
+		// never reach this branch.
+		downgraded = true
 		body.CPU, body.Memory, body.Disk = 0, 0, 0
 		body.Telemetry = nil
 	} else {
@@ -979,14 +980,22 @@ func (s *Server) handleClientHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Update peer status to ONLINE
-	_ = s.db.UpdatePeerStatus(deviceID, "ONLINE", statusIP, "heartbeat")
+	if downgraded {
+		// Writing back the address read earlier could undo a concurrent
+		// signed heartbeat's update; leave the address alone instead.
+		_ = s.db.BatchUpdatePeerStatus([]string{deviceID}, "ONLINE", "heartbeat")
+	} else {
+		_ = s.db.UpdatePeerStatus(deviceID, "ONLINE", clientIP, "heartbeat")
+	}
 	// HTTP heartbeats are also a liveness signal for BetterDesk clients that
 	// do not maintain a UDP/WebSocket signal connection. Refresh the in-memory
 	// peer map so the signal heartbeat cleaner does not mark them offline again.
 	s.peers.TouchHeartbeat(deviceID)
 
 	// If the user logged in before the peer row existed, bind owner now.
-	db.ApplyActiveSessionOwner(s.db, deviceID, body.UUID)
+	if !downgraded {
+		db.ApplyActiveSessionOwner(s.db, deviceID, body.UUID)
+	}
 
 	// Save metrics if any values provided (values > 0)
 	if body.CPU > 0 || body.Memory > 0 || body.Disk > 0 {
