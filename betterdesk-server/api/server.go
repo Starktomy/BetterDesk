@@ -378,7 +378,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("PUT /api/org/{id}/users/{uid}", s.requirePermission(auth.PermOrgManageUsers, s.requireOrgMembership("id", s.handleUpdateOrgUser)))
 	mux.HandleFunc("DELETE /api/org/{id}/users/{uid}", s.requirePermission(auth.PermOrgManageUsers, s.requireOrgMembership("id", s.handleDeleteOrgUser)))
 	mux.HandleFunc("POST /api/org/{id}/invite", s.requirePermission(auth.PermOrgManageUsers, s.requireOrgMembership("id", s.handleCreateOrgInvitation)))
-	mux.HandleFunc("GET /api/org/{id}/invitations", s.requireOrgMembership("id", s.handleListOrgInvitations))
+	mux.HandleFunc("GET /api/org/{id}/invitations", s.requirePermission(auth.PermOrgManageUsers, s.requireOrgMembership("id", s.handleListOrgInvitations)))
 	mux.HandleFunc("POST /api/org/{id}/devices", s.requirePermission(auth.PermOrgManageDevices, s.requireOrgMembership("id", s.handleAssignOrgDevice)))
 	mux.HandleFunc("GET /api/org/{id}/devices", s.requireOrgMembership("id", s.handleListOrgDevices))
 	mux.HandleFunc("DELETE /api/org/{id}/devices/{did}", s.requirePermission(auth.PermOrgManageDevices, s.requireOrgMembership("id", s.handleUnassignOrgDevice)))
@@ -924,7 +924,8 @@ func (s *Server) handleListPeers(w http.ResponseWriter, r *http.Request) {
 	// Issue #138: without this detection, the client gets status:"ONLINE"
 	// (string) where it expects int, causing "type 'String' is not a subtype
 	// of type 'int?'" error.
-	if r.URL.Query().Has("accessible") || r.URL.Query().Has("pageSize") {
+	orgUser := getOrgUserFromCtx(r)
+	if orgUser == nil && (r.URL.Query().Has("accessible") || r.URL.Query().Has("pageSize")) {
 		s.handleClientPeersList(w, r)
 		return
 	}
@@ -936,7 +937,7 @@ func (s *Server) handleListPeers(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgIDFromCtx(r)
 	username := getUsernameFromCtx(r)
 	role := getRoleFromCtx(r)
-	needsDeviceACL := username != "" && role != "" &&
+	needsDeviceACL := orgUser == nil && username != "" && role != "" &&
 		!auth.IsSuperAdminRole(role) && role != auth.RoleGlobalAdmin && role != auth.RoleServerAdmin
 
 	var peers []*db.Peer

@@ -28,6 +28,7 @@ const (
 	ctxKeyUsername contextKey = "username"
 	ctxKeyUser     contextKey = "user"   // Full db.User object
 	ctxKeyOrgID    contextKey = "org_id" // Organization ID (empty for global users)
+	ctxKeyOrgUser  contextKey = "org_user"
 )
 
 // getRoleFromCtx returns the authenticated user's role from the request context.
@@ -136,47 +137,34 @@ func (s *Server) requirePermission(perm string, handler http.HandlerFunc) http.H
 			return
 		}
 
-		if auth.IsProRole(userRole) && auth.ProRoleBlocksPermission(perm) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Insufficient permissions"})
+		granted, err := s.requestPermission(r, perm)
+		if err != nil {
+			log.Printf("api: permission lookup failed for role %q permission %q: %v", userRole, perm, err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Permission service unavailable"})
 			return
 		}
-
-		// Super admin (and legacy admin) always has all permissions
-		if auth.IsSuperAdminRole(userRole) {
-			handler(w, r)
-			return
-		}
-
-		// Check DB-stored custom permission overrides first. Do not treat a
-		// database failure as "no override": that would fail open for roles
-		// whose defaults grant the permission.
-		if s.db != nil {
-			granted, overridden, err := s.resolvePermission(userRole, perm)
-			if err != nil {
-				log.Printf("api: permission lookup failed for role %q permission %q: %v", userRole, perm, err)
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-					"error": "Permission service unavailable",
-				})
-				return
-			}
-			if overridden {
-				if granted {
-					handler(w, r)
-					return
-				}
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "Insufficient permissions"})
-				return
-			}
-		}
-
-		// Fall back to built-in default role permissions
-		if auth.RoleHasPermission(userRole, perm) {
+		if granted {
 			handler(w, r)
 			return
 		}
 
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Insufficient permissions"})
 	}
+}
+
+func (s *Server) requestPermission(r *http.Request, permission string) (bool, error) {
+	if user := getOrgUserFromCtx(r); user != nil {
+		return orgRoleHasPermission(user.Role, permission), nil
+	}
+	role := getRoleFromCtx(r)
+	if role == "" || auth.IsDeviceRole(role) || (auth.IsProRole(role) && auth.ProRoleBlocksPermission(permission)) {
+		return false, nil
+	}
+	if auth.IsSuperAdminRole(role) {
+		return true, nil
+	}
+	granted, _, err := s.resolvePermission(role, permission)
+	return granted, err
 }
 
 // requireOrgMembership wraps a handler to enforce that the authenticated user
@@ -201,8 +189,12 @@ func (s *Server) requireOrgMembership(paramName string, handler http.HandlerFunc
 
 		// Check if the user's JWT org_id matches the target org
 		userOrgID := getOrgIDFromCtx(r)
-		if userOrgID != "" && userOrgID == targetOrgID {
-			handler(w, r)
+		if userOrgID != "" {
+			if userOrgID == targetOrgID {
+				handler(w, r)
+				return
+			}
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "You are not a member of this organization"})
 			return
 		}
 
@@ -444,6 +436,12 @@ func (s *Server) handleLogin2FA(w http.ResponseWriter, r *http.Request) {
 // handleAuthMe returns current authenticated user info.
 // GET /api/auth/me
 func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	if user := getOrgUserFromCtx(r); user != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": user.ID, "username": user.Username, "role": user.Role, "org_id": user.OrgID,
+		})
+		return
+	}
 	username := getUsernameFromCtx(r)
 	user, err := s.db.GetUser(username)
 	if err != nil || user == nil {
@@ -1157,9 +1155,7 @@ func hashAPIKey(key string) string {
 }
 
 // authenticateRequest extracts and validates credentials from a request.
-// Returns (username, role, ok). If ok is false, an error response has been written.
-// Auth order: Bearer JWT → X-API-Key (scoped DB lookup).
-func (s *Server) authenticateRequest(r *http.Request) (username, role string, ok bool) {
+func (s *Server) authenticateRequest(r *http.Request) (username, role, orgID string, ok bool) {
 	// 0. Panel trust bridge — a statement signed by the Node console for a
 	//    signed-in operator. A request that presents the panel-trust header
 	//    must not fall through to API-key authentication: doing so would
@@ -1172,22 +1168,25 @@ func (s *Server) authenticateRequest(r *http.Request) (username, role string, ok
 	if r.Header.Get(PanelTrustHeader) != "" {
 		if !s.panelTrustEnabled() {
 			log.Printf("[panel-trust] rejected %s %s: bridge is not configured", r.Method, redactPathSegment(r.URL.Path))
-			return "", "", false
+			return "", "", "", false
 		}
 		if !s.panelTrustPeerAllowed(r) {
 			log.Printf("[panel-trust] rejected %s %s: peer is not allowed", r.Method, redactPathSegment(r.URL.Path))
-			return "", "", false
+			return "", "", "", false
 		}
 		claim, err := s.verifyPanelTrust(r)
 		if err != nil {
 			log.Printf("[panel-trust] rejected %s %s: %v", r.Method, redactPathSegment(r.URL.Path), err)
-			return "", "", false
+			return "", "", "", false
+		}
+		if claim.OrgID != "" {
+			return claim.Subject, claim.Role, claim.OrgID, true
 		}
 		role := s.resolvePanelRole(claim)
 		if role == "" {
-			return "", "", false
+			return "", "", "", false
 		}
-		return claim.Subject, role, true
+		return claim.Subject, role, "", true
 	}
 
 	// 1. Bearer token — opaque client session (RustDesk desktop) or JWT (panel/API)
@@ -1195,14 +1194,14 @@ func (s *Server) authenticateRequest(r *http.Request) (username, role string, ok
 		token := strings.TrimSpace(bearer[7:])
 		if isOpaqueClientToken(token) {
 			if username, role, ok := s.authenticateClientSession(token); ok {
-				return username, role, true
+				return username, role, "", true
 			}
-			return "", "", false
+			return "", "", "", false
 		}
 		if s.jwtManager != nil {
 			claims, err := s.jwtManager.Validate(token)
 			if err == nil && claims.Role != "__2fa_pending__" {
-				return claims.Sub, claims.Role, true
+				return claims.Sub, claims.Role, claims.OrgID, true
 			}
 		}
 	}
@@ -1213,32 +1212,15 @@ func (s *Server) authenticateRequest(r *http.Request) (username, role string, ok
 		keyHash := hashAPIKey(apiKey)
 		if k, err := s.db.GetAPIKeyByHash(keyHash); err == nil && k != nil {
 			if k.Expired(time.Now()) {
-				return "", "", false
+				return "", "", "", false
 			}
 			// Update last_used in background
 			go func() { _ = s.db.TouchAPIKey(k.ID) }()
-			return "apikey:" + k.Name, k.Role, true
+			return "apikey:" + k.Name, k.Role, "", true
 		}
 	}
 
-	return "", "", false
-}
-
-// extractOrgIDFromRequest reads the org_id from the Bearer JWT token.
-// Returns empty string if no JWT, no org_id, or API key auth (non-JWT).
-func (s *Server) extractOrgIDFromRequest(r *http.Request) string {
-	if s.jwtManager == nil {
-		return ""
-	}
-	bearer := r.Header.Get("Authorization")
-	if len(bearer) <= 7 || bearer[:7] != "Bearer " {
-		return ""
-	}
-	claims, err := s.jwtManager.Validate(bearer[7:])
-	if err != nil {
-		return ""
-	}
-	return claims.OrgID
+	return "", "", "", false
 }
 
 // redactPathSegment masks high-cardinality identifiers in URL paths so that
@@ -1334,7 +1316,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		username, role, ok := s.authenticateRequest(r)
+		username, role, orgID, ok := s.authenticateRequest(r)
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid or missing credentials"})
 			return
@@ -1347,15 +1329,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), ctxKeyRole, role)
-		ctx = context.WithValue(ctx, ctxKeyUsername, username)
-
-		// Extract org_id from JWT claims (if present)
-		orgID := s.extractOrgIDFromRequest(r)
+		ctx := context.WithValue(r.Context(), ctxKeyUsername, username)
 		if orgID != "" {
-			ctx = context.WithValue(ctx, ctxKeyOrgID, orgID)
+			s.serveOrgScopedRequest(w, r.WithContext(ctx), next, orgID, username)
+			return
 		}
 
+		ctx = context.WithValue(ctx, ctxKeyRole, role)
 		// Optionally load full user object for handlers that need it
 		if user, err := s.db.GetUser(username); err == nil && user != nil {
 			ctx = context.WithValue(ctx, ctxKeyUser, user)

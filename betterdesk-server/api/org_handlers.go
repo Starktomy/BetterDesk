@@ -28,6 +28,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -134,6 +135,19 @@ func (s *Server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/org
 func (s *Server) handleListOrgs(w http.ResponseWriter, r *http.Request) {
+	if orgID := getOrgIDFromCtx(r); orgID != "" {
+		org, err := s.db.GetOrganization(orgID)
+		if err != nil {
+			writeInternalError(w, err, "GetOrganization")
+			return
+		}
+		orgs := []*db.Organization{}
+		if org != nil {
+			orgs = append(orgs, org)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"organizations": orgs})
+		return
+	}
 	userRole := getRoleFromCtx(r)
 	username := getUsernameFromCtx(r)
 
@@ -148,7 +162,7 @@ func (s *Server) handleListOrgs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Data scoping: non-admin users only see orgs they belong to
-	if userRole != auth.RoleAdmin {
+	if !auth.IsSuperAdminRole(userRole) && userRole != auth.RoleGlobalAdmin {
 		var filtered []*db.Organization
 		for _, org := range orgs {
 			member, err := s.db.GetOrgUserByUsername(org.ID, username)
@@ -406,8 +420,12 @@ func (s *Server) handleUpdateOrgUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := s.db.GetOrgUser(uid)
-	if err != nil || user == nil {
+	if err != nil || user == nil || user.OrgID != r.PathValue("id") {
 		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
+	if !s.canManageOrgUser(r, user) {
+		http.Error(w, `{"error":"cannot modify a user at or above your org-level authority"}`, http.StatusForbidden)
 		return
 	}
 
@@ -454,29 +472,23 @@ func (s *Server) handleUpdateOrgUser(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, `{"error":"cannot assign a role higher than your org-level authority"}`, http.StatusForbidden)
 				return
 			}
-			// Cannot demote someone at or above own level.
-			if db.OrgRoleLevel(user.Role) >= db.OrgRoleLevel(callerOrgUser.Role) {
-				http.Error(w, `{"error":"cannot modify a user at or above your org-level authority"}`, http.StatusForbidden)
-				return
-			}
 		}
 
 		user.Role = *body.Role
 	}
 
+	if body.Password != nil && *body.Password != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(*body.Password), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, `{"error":"invalid password"}`, http.StatusBadRequest)
+			return
+		}
+		user.PasswordHash = string(hash)
+	}
 	if err := s.db.UpdateOrgUser(user); err != nil {
 		log.Printf("[org] UpdateOrgUser error: %v", err)
 		http.Error(w, `{"error":"failed to update user"}`, http.StatusInternalServerError)
 		return
-	}
-
-	// Handle password change separately (requires re-hashing)
-	if body.Password != nil && *body.Password != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(*body.Password), bcrypt.DefaultCost)
-		if err == nil {
-			user.PasswordHash = string(hash)
-			s.db.UpdateOrgUser(user)
-		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -490,6 +502,15 @@ func (s *Server) handleDeleteOrgUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"user id required"}`, http.StatusBadRequest)
 		return
 	}
+	user, err := s.db.GetOrgUser(uid)
+	if err != nil || user == nil || user.OrgID != r.PathValue("id") {
+		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		return
+	}
+	if !s.canManageOrgUser(r, user) {
+		http.Error(w, `{"error":"cannot remove a user at or above your org-level authority"}`, http.StatusForbidden)
+		return
+	}
 
 	if err := s.db.DeleteOrgUser(uid); err != nil {
 		log.Printf("[org] DeleteOrgUser error: %v", err)
@@ -497,6 +518,15 @@ func (s *Server) handleDeleteOrgUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) canManageOrgUser(r *http.Request, target *db.OrgUser) bool {
+	role := getRoleFromCtx(r)
+	if auth.IsSuperAdminRole(role) || role == auth.RoleGlobalAdmin {
+		return true
+	}
+	caller, err := s.db.GetOrgUserByUsername(target.OrgID, getUsernameFromCtx(r))
+	return err == nil && caller != nil && db.OrgCanAssignRole(caller.Role, target.Role)
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +564,18 @@ func (s *Server) handleAssignOrgDevice(w http.ResponseWriter, r *http.Request) {
 		Tags:           body.Tags,
 	}
 
-	if err := s.db.AssignDeviceToOrg(d); err != nil {
+	role := getRoleFromCtx(r)
+	var err error
+	if auth.IsSuperAdminRole(role) || role == auth.RoleGlobalAdmin {
+		err = s.db.AssignDeviceToOrg(d)
+	} else {
+		err = s.db.UpdateOrgDevice(d)
+	}
+	if errors.Is(err, db.ErrPeerNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Device not found in this organization"})
+		return
+	}
+	if err != nil {
 		log.Printf("[org] AssignDeviceToOrg error: %v", err)
 		http.Error(w, `{"error":"failed to assign device"}`, http.StatusInternalServerError)
 		return
@@ -597,6 +638,14 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 	}
 	if body.Role == "" {
 		body.Role = db.OrgRoleUser
+	}
+	if !db.ValidOrgRole(body.Role) {
+		http.Error(w, `{"error":"invalid role"}`, http.StatusBadRequest)
+		return
+	}
+	if caller := getOrgUserFromCtx(r); caller != nil && !db.OrgCanAssignRole(caller.Role, body.Role) {
+		http.Error(w, `{"error":"cannot assign a role higher than your org-level authority"}`, http.StatusForbidden)
+		return
 	}
 	if body.ExpiresIn <= 0 {
 		body.ExpiresIn = 72
@@ -1148,6 +1197,15 @@ func (s *Server) handleUnlinkUserFromOrg(w http.ResponseWriter, r *http.Request)
 		// Only owner/admin can unlink
 		if callerOrgUser.Role != db.OrgRoleOwner && callerOrgUser.Role != db.OrgRoleAdmin {
 			http.Error(w, `{"error":"insufficient permissions to unlink users"}`, http.StatusForbidden)
+			return
+		}
+		target, err := s.db.GetOrgUserByServerUserID(orgID, userID)
+		if err != nil || target == nil {
+			http.Error(w, `{"error":"user not linked to this organization"}`, http.StatusNotFound)
+			return
+		}
+		if !db.OrgCanAssignRole(callerOrgUser.Role, target.Role) {
+			http.Error(w, `{"error":"cannot remove a user at or above your org-level authority"}`, http.StatusForbidden)
 			return
 		}
 	}

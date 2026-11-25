@@ -265,11 +265,14 @@ func (pg *PostgresDB) ListOrgDevices(orgID string) ([]*OrgDevice, error) {
 }
 
 func (pg *PostgresDB) UpdateOrgDevice(d *OrgDevice) error {
-	_, err := pg.pool.Exec(pg.ctx,
+	result, err := pg.pool.Exec(pg.ctx,
 		`UPDATE org_devices SET assigned_user_id = $1, department = $2, location = $3, building = $4, tags = $5
 		 WHERE org_id = $6 AND device_id = $7`,
 		d.AssignedUserID, d.Department, d.Location, d.Building, d.Tags, d.OrgID, d.DeviceID,
 	)
+	if err == nil && result.RowsAffected() == 0 {
+		return ErrPeerNotFound
+	}
 	return err
 }
 

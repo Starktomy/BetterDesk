@@ -349,11 +349,18 @@ func (s *SQLiteDB) UpdateOrgDevice(d *OrgDevice) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(
+	result, err := s.db.Exec(
 		`UPDATE org_devices SET assigned_user_id = ?, department = ?, location = ?, building = ?, tags = ?
 		 WHERE org_id = ? AND device_id = ?`,
 		d.AssignedUserID, d.Department, d.Location, d.Building, d.Tags, d.OrgID, d.DeviceID,
 	)
+	if err != nil {
+		return err
+	}
+	matched, err := result.RowsAffected()
+	if err == nil && matched == 0 {
+		return ErrPeerNotFound
+	}
 	return err
 }
 

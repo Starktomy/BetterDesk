@@ -119,7 +119,7 @@ func TestPanelTrustHeaderNeverFallsThroughToAPIKey(t *testing.T) {
 	req.Header.Set(PanelTrustHeader, "invalid-or-untrusted-panel-statement")
 	req.Header.Set("X-API-Key", operatorKey)
 
-	if username, _, ok := srv.authenticateRequest(req); ok {
+	if username, _, _, ok := srv.authenticateRequest(req); ok {
 		t.Fatalf("panel-trust request unexpectedly authenticated as %q", username)
 	}
 }
