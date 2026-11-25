@@ -32,6 +32,10 @@ const MIN_FREE_BYTES = (() => {
     return Number.isFinite(n) && n >= 0 ? n : 1024 * 1024 * 1024;
 })();
 
+// Uploads still being written are not yet visible in statfs, so each one
+// reserves the full size limit until its request ends.
+let reservedBytes = 0;
+
 async function requireFreeSpace(req, res, next) {
     let stats;
     try {
@@ -39,9 +43,18 @@ async function requireFreeSpace(req, res, next) {
     } catch (_) {
         return next();
     }
-    if (stats.bavail * stats.bsize < MIN_FREE_BYTES + MAX_FILE_SIZE) {
+    if (stats.bavail * stats.bsize - reservedBytes < MIN_FREE_BYTES + MAX_FILE_SIZE) {
         return res.status(507).json({ success: false, error: 'Not enough disk space for attachments' });
     }
+    // No await between the check and the reservation, so concurrent
+    // requests cannot both pass on the same free space.
+    reservedBytes += MAX_FILE_SIZE;
+    let released = false;
+    res.once('close', () => {
+        if (released) return;
+        released = true;
+        reservedBytes -= MAX_FILE_SIZE;
+    });
     return next();
 }
 

@@ -85,6 +85,47 @@ describe('Chat attachments', () => {
         }
     });
 
+    it('counts uploads still in progress against the free space', async () => {
+        const http = require('http');
+        const reserve = 1024 * 1024 * 1024 + 50 * 1024 * 1024; // the reserve plus one upload
+        const statfs = jest.spyOn(fs.promises, 'statfs').mockResolvedValue({ bavail: reserve + 1024, bsize: 1 });
+        const server = http.createServer(appFor('viewer'));
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const port = server.address().port;
+        try {
+            // Hold the first upload open mid-body.
+            const boundary = 'bdtestboundary';
+            const slow = http.request({
+                host: '127.0.0.1', port, method: 'POST', path: '/api/chat/upload',
+                headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
+            });
+            const slowDone = new Promise((resolve) => slow.on('response', (res) => {
+                let body = '';
+                res.on('data', (c) => { body += c; });
+                res.on('end', () => resolve({ status: res.statusCode, body }));
+            }));
+            slow.write('--' + boundary + '\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n\r\n');
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            const second = await request(server).post('/api/chat/upload').attach('file', Buffer.from('x'), 'b.txt');
+            expect(second.status).toBe(507);
+
+            slow.end('data\r\n--' + boundary + '--\r\n');
+            const first = await slowDone;
+            expect(first.status).toBe(200);
+            created.push(JSON.parse(first.body).filename);
+
+            // The reservation is released once the first upload ends.
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const third = await request(server).post('/api/chat/upload').attach('file', Buffer.from('x'), 'c.txt');
+            expect(third.status).toBe(200);
+            created.push(third.body.filename);
+        } finally {
+            statfs.mockRestore();
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
     it('stores uploads under a random ID with a sanitized extension', async () => {
         const app = appFor('viewer');
         const res = await request(app).post('/api/chat/upload').attach('file', Buffer.from('x'), 'report.HTML');
