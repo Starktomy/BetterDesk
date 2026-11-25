@@ -16,8 +16,21 @@ const XTERM_CDN = 'https://cdn.jsdelivr.net/npm/@xterm/';
  * HSTS is disabled for self-signed / LAN installs so HTTP↔HTTPS toggles do not
  * leave a year-long browser enforcement (#219). Set HSTS_ENABLED=true to force it.
  */
+// HTTPS_ENABLED can be set while the server falls back to plain HTTP because
+// the certificates are missing. Headers must follow what is actually served:
+// upgrade-insecure-requests on an HTTP-only server breaks every subresource.
+let servingHttps = null;
+
+function httpsServed() {
+    return servingHttps === null ? !!config.httpsEnabled : servingHttps;
+}
+
+function downgradeToHttp() {
+    servingHttps = false;
+}
+
 function shouldSendStrictTransportSecurity() {
-    if (!config.httpsEnabled) return false;
+    if (!httpsServed()) return false;
     const hstsEnv = String(process.env.HSTS_ENABLED || '').toLowerCase();
     if (hstsEnv === 'false' || hstsEnv === '0' || hstsEnv === 'off') return false;
     if (hstsEnv === 'true' || hstsEnv === '1' || hstsEnv === 'on') return true;
@@ -85,7 +98,7 @@ function buildHelmetMiddleware(req, res) {
 
     const variant = {
         remoteEval: req.path.startsWith('/remote') && allowRemoteUnsafeEval(),
-        https: !!config.httpsEnabled,
+        https: httpsServed(),
         hsts: shouldSendStrictTransportSecurity()
     };
     const key = `${variant.remoteEval}|${variant.https}|${variant.hsts}`;
@@ -140,3 +153,4 @@ function securityMiddleware(req, res, next) {
 
 module.exports = securityMiddleware;
 module.exports.allowRemoteUnsafeEval = allowRemoteUnsafeEval;
+module.exports.downgradeToHttp = downgradeToHttp;

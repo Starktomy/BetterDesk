@@ -665,6 +665,7 @@ async function startServer() {
                     sessionMiddleware.options.cookie.secure = false;
                 }
                 csrfDowngradeToHttp();
+                securityMiddleware.downgradeToHttp();
                 
                 server = http.createServer(app);
                 attachPrivilegedPortErrorHandler(server, { port: listenPort, label: 'HTTP' });

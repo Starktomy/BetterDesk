@@ -139,4 +139,33 @@ describe('Security Middleware', () => {
         jest.dontMock('helmet');
         jest.resetModules();
     });
+
+    it('drops HTTPS-only headers when the server falls back to HTTP', async () => {
+        const saved = { https: process.env.HTTPS_ENABLED, hsts: process.env.HSTS_ENABLED };
+        process.env.HTTPS_ENABLED = 'true';
+        process.env.HSTS_ENABLED = 'true';
+        jest.resetModules();
+        const securityMw = require('../middleware/security');
+        const app = createTestApp();
+        app.use(securityMw);
+        app.get('/page', (_req, res) => res.send('ok'));
+
+        const before = await request(app).get('/page');
+        expect(before.headers['content-security-policy']).toContain('upgrade-insecure-requests');
+        expect(before.headers['strict-transport-security']).toBeDefined();
+
+        securityMw.downgradeToHttp();
+        const after = await request(app).get('/page');
+        const csp = after.headers['content-security-policy'];
+        expect(csp).not.toContain('upgrade-insecure-requests');
+        expect(csp).toMatch(/connect-src [^;]*\bws:/);
+        expect(csp).not.toContain('wss:');
+        expect(after.headers['strict-transport-security']).toBeUndefined();
+
+        for (const [key, name] of [['https', 'HTTPS_ENABLED'], ['hsts', 'HSTS_ENABLED']]) {
+            if (saved[key] === undefined) delete process.env[name];
+            else process.env[name] = saved[key];
+        }
+        jest.resetModules();
+    });
 });
