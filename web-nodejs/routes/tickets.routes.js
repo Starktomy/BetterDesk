@@ -71,6 +71,17 @@ const SLA_HOURS = {
     low: 72,
 };
 
+// List responses return the newest tickets up to this cap and say when more
+// exist, instead of loading the whole table into memory per request.
+const LIST_CAP = 1000;
+
+async function listTickets(adapter, filters) {
+    const rows = await adapter.getAllTickets({ ...filters, limit: LIST_CAP + 1 });
+    const truncated = rows.length > LIST_CAP;
+    const tickets = truncated ? rows.slice(0, LIST_CAP) : rows;
+    return { tickets, total: tickets.length, truncated };
+}
+
 function calculateSlaDue(priority) {
     const hours = SLA_HOURS[priority] || SLA_HOURS.medium;
     const due = new Date();
@@ -119,8 +130,7 @@ router.get('/', requireAuth, async (req, res) => {
         if (req.session.user.role === 'viewer') {
             filters.assigned_to = req.session.user.username;
         }
-        const tickets = await adapter.getAllTickets(filters);
-        res.json({ tickets, total: tickets.length });
+        res.json(await listTickets(adapter, filters));
     } catch (err) {
         console.error('[Tickets] List error:', err.message);
         res.status(500).json({ error: 'Internal server error' });
@@ -506,8 +516,7 @@ router.post('/bd', requireDeviceToken, async (req, res) => {
 router.get('/bd', requireDeviceToken, async (req, res) => {
     try {
         const adapter = getAdapter();
-        const tickets = await adapter.getAllTickets({ device_id: req.deviceId });
-        res.json({ tickets, total: tickets.length });
+        res.json(await listTickets(adapter, { device_id: req.deviceId }));
     } catch (err) {
         console.error('[Tickets] Agent list error:', err.message);
         res.status(500).json({ error: 'Internal server error' });

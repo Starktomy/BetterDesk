@@ -38,6 +38,26 @@ describe('dbAdapter SQLite single-store topology', () => {
         await adapter.close();
     });
 
+    it('caps ticket and registration lists only when asked', async () => {
+        const { getAdapter } = require('../services/dbAdapter');
+        const adapter = getAdapter();
+        await adapter.init();
+        try {
+            for (let i = 0; i < 5; i += 1) {
+                await adapter.createTicket({ title: `t${i}`, description: '', priority: 'low', category: 'general', createdBy: 'ops' });
+                await adapter.createPendingRegistration({ device_id: `dev${i}` });
+            }
+            expect(await adapter.getAllTickets({})).toHaveLength(5);
+            expect(await adapter.getAllTickets({ limit: 2 })).toHaveLength(2);
+            expect(await adapter.getAllTickets({ status: 'open', limit: 3 })).toHaveLength(3);
+            expect(await adapter.getAllTickets({ limit: 'abc' })).toHaveLength(5);
+            expect(await adapter.getPendingRegistrations({ status: 'pending' })).toHaveLength(5);
+            expect(await adapter.getPendingRegistrations({ status: 'pending', limit: 3 })).toHaveLength(3);
+        } finally {
+            await adapter.close();
+        }
+    });
+
     it('loads group memberships for the requested peers in name order', async () => {
         const { getAdapter } = require('../services/dbAdapter');
         const adapter = getAdapter();

@@ -183,71 +183,86 @@ router.get('/api/logs/recent', apiLimiter, requireAuth, requirePermission('metri
 
 // ─── GET /api/database/stats ──────────────────────────────────────────────────
 
+// COUNT(*) scans each table, and every open dashboard polls this widget.
+// Share one result for a short while, and one run between concurrent callers.
+const DB_STATS_TTL_MS = 30 * 1000;
+let dbStatsPromise = null;
+let dbStatsStartedAt = 0;
+
 router.get('/api/database/stats', apiLimiter, requireAuth, requirePermission('metrics.view'), async (req, res) => {
     try {
-        const db = require('../services/dbAdapter');
-        const config = require('../config/config');
-        const isPostgres = config.dbType === 'postgresql' || (config.databaseUrl || '').startsWith('postgres');
-        const result = { type: isPostgres ? 'PostgreSQL' : 'SQLite', tables: [], size: '-' };
-
-        if (isPostgres) {
-            // PostgreSQL table stats
-            const tables = await db.allAsync(
-                `SELECT tablename AS name FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename`
-            );
-            for (const tbl of tables) {
-                if (!isSafeSqlIdent(tbl.name)) continue;
-                try {
-                    const safe = assertSafeSqlIdent(tbl.name);
-                    const row = await db.getAsync(`SELECT COUNT(*) AS count FROM "${safe}"`);
-                    result.tables.push({ name: safe, count: row ? row.count : 0 });
-                } catch (e) { /* skip */ }
-            }
-            // DB size
-            try {
-                const sizeRow = await db.getAsync(`SELECT pg_size_pretty(pg_database_size(current_database())) AS size`);
-                if (sizeRow) result.size = sizeRow.size;
-            } catch (e) { /* skip */ }
-        } else {
-            // SQLite table stats
-            const tables = await db.allAsync(
-                `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
-            );
-            for (const tbl of tables) {
-                if (!isSafeSqlIdent(tbl.name)) continue;
-                try {
-                    const safe = assertSafeSqlIdent(tbl.name);
-                    const row = await db.getAsync(`SELECT COUNT(*) AS count FROM "${safe}"`);
-                    result.tables.push({ name: safe, count: row ? row.count : 0 });
-                } catch (e) { /* skip */ }
-            }
-            // DB file size
-            const dbPath = config.dbPath || path.join(__dirname, '..', 'data', 'auth.db');
-            if (fs.existsSync(dbPath)) {
-                const stat = fs.statSync(dbPath);
-                const kb = stat.size / 1024;
-                result.size = kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : Math.round(kb) + ' KB';
-            }
+        if (!dbStatsPromise || Date.now() - dbStatsStartedAt > DB_STATS_TTL_MS) {
+            dbStatsStartedAt = Date.now();
+            dbStatsPromise = collectDatabaseStats();
+            dbStatsPromise.catch(() => { dbStatsPromise = null; });
         }
-
-        // Check last backup
-        const backupDir = path.join(__dirname, '..', 'data', 'backups');
-        if (fs.existsSync(backupDir)) {
-            try {
-                const files = fs.readdirSync(backupDir).filter(f => f.endsWith('.db') || f.endsWith('.sql') || f.endsWith('.gz'));
-                if (files.length) {
-                    const latest = files.sort().pop();
-                    const stat = fs.statSync(path.join(backupDir, latest));
-                    result.last_backup = stat.mtime.toISOString();
-                }
-            } catch (e) { /* skip */ }
-        }
-
-        res.json(result);
+        res.json(await dbStatsPromise);
     } catch (err) {
         res.status(500).json({ error: 'Failed to get database stats' });
     }
 });
+
+async function collectDatabaseStats() {
+    const db = require('../services/dbAdapter');
+    const config = require('../config/config');
+    const isPostgres = config.dbType === 'postgresql' || (config.databaseUrl || '').startsWith('postgres');
+    const result = { type: isPostgres ? 'PostgreSQL' : 'SQLite', tables: [], size: '-' };
+
+    if (isPostgres) {
+        // PostgreSQL table stats
+        const tables = await db.allAsync(
+            `SELECT tablename AS name FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename`
+        );
+        for (const tbl of tables) {
+            if (!isSafeSqlIdent(tbl.name)) continue;
+            try {
+                const safe = assertSafeSqlIdent(tbl.name);
+                const row = await db.getAsync(`SELECT COUNT(*) AS count FROM "${safe}"`);
+                result.tables.push({ name: safe, count: row ? row.count : 0 });
+            } catch (e) { /* skip */ }
+        }
+        // DB size
+        try {
+            const sizeRow = await db.getAsync(`SELECT pg_size_pretty(pg_database_size(current_database())) AS size`);
+            if (sizeRow) result.size = sizeRow.size;
+        } catch (e) { /* skip */ }
+    } else {
+        // SQLite table stats
+        const tables = await db.allAsync(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+        );
+        for (const tbl of tables) {
+            if (!isSafeSqlIdent(tbl.name)) continue;
+            try {
+                const safe = assertSafeSqlIdent(tbl.name);
+                const row = await db.getAsync(`SELECT COUNT(*) AS count FROM "${safe}"`);
+                result.tables.push({ name: safe, count: row ? row.count : 0 });
+            } catch (e) { /* skip */ }
+        }
+        // DB file size
+        const dbPath = config.dbPath || path.join(__dirname, '..', 'data', 'auth.db');
+        if (fs.existsSync(dbPath)) {
+            const stat = fs.statSync(dbPath);
+            const kb = stat.size / 1024;
+            result.size = kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : Math.round(kb) + ' KB';
+        }
+    }
+
+    // Check last backup
+    const backupDir = path.join(__dirname, '..', 'data', 'backups');
+    if (fs.existsSync(backupDir)) {
+        try {
+            const files = fs.readdirSync(backupDir).filter(f => f.endsWith('.db') || f.endsWith('.sql') || f.endsWith('.gz'));
+            if (files.length) {
+                const latest = files.sort().pop();
+                const stat = fs.statSync(path.join(backupDir, latest));
+                result.last_backup = stat.mtime.toISOString();
+            }
+        } catch (e) { /* skip */ }
+    }
+
+    return result;
+}
 
 // ─── GET /api/docker/containers ───────────────────────────────────────────────
 

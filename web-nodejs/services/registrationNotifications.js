@@ -62,7 +62,9 @@ function enrollmentToNotification(enrollment) {
 async function listRegistrationNotifications(db, betterdeskApi) {
     const [lanResult, enrollmentResult] = await Promise.all([
         typeof db?.getPendingRegistrations === 'function'
-            ? Promise.resolve(db.getPendingRegistrations({ status: 'pending' })).catch(() => [])
+            // Notifications list the newest requests; the badge count has its
+            // own query, so the cap only bounds what each poll loads.
+            ? Promise.resolve(db.getPendingRegistrations({ status: 'pending', limit: 200 })).catch(() => [])
             : Promise.resolve([]),
         typeof betterdeskApi?.getEnrollmentPending === 'function'
             ? Promise.resolve(betterdeskApi.getEnrollmentPending()).catch(() => ({ data: [] }))

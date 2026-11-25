@@ -50,6 +50,8 @@ function isValidGroupGuid(guid) {
 //  Helpers
 // ---------------------------------------------------------------------------
 
+const REGISTRATION_LIST_CAP = 1000;
+
 function getClientIp(req) {
     return clientIp(req);
 }
@@ -214,12 +216,17 @@ router.get('/api/registrations', requirePermission('enrollment.approve'), async 
             status: req.query.status || '',
             search: req.query.search || '',
         };
-        const registrations = await db.getPendingRegistrations(filters);
+        // Registrations arrive through a public endpoint, so the table can grow
+        // without an operator; return the newest ones and say when more exist.
+        const rows = await db.getPendingRegistrations({ ...filters, limit: REGISTRATION_LIST_CAP + 1 });
+        const truncated = rows.length > REGISTRATION_LIST_CAP;
+        const registrations = truncated ? rows.slice(0, REGISTRATION_LIST_CAP) : rows;
 
         res.json({
             success: true,
             data: registrations,
             total: registrations.length,
+            truncated,
         });
     } catch (err) {
         console.error('Get registrations error:', err);
