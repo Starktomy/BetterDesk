@@ -73,6 +73,18 @@ describe('Chat attachments', () => {
         expect(fs.readdirSync(UPLOAD_DIR).filter((name) => !created.includes(name))).toEqual([]);
     });
 
+    it('refuses uploads before writing when the disk is nearly full', async () => {
+        const statfs = jest.spyOn(fs.promises, 'statfs').mockResolvedValue({ bavail: 10, bsize: 4096 });
+        try {
+            const before = fs.readdirSync(UPLOAD_DIR).length;
+            const res = await request(appFor('viewer')).post('/api/chat/upload').attach('file', Buffer.from('x'), 'a.txt');
+            expect(res.status).toBe(507);
+            expect(fs.readdirSync(UPLOAD_DIR).length).toBe(before);
+        } finally {
+            statfs.mockRestore();
+        }
+    });
+
     it('stores uploads under a random ID with a sanitized extension', async () => {
         const app = appFor('viewer');
         const res = await request(app).post('/api/chat/upload').attach('file', Buffer.from('x'), 'report.HTML');

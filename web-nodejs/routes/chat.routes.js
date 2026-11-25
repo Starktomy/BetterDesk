@@ -25,6 +25,26 @@ if (!fs.existsSync(UPLOAD_DIR)) {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
+// Attachments are kept indefinitely, so refuse new ones before they can fill
+// the disk the databases live on. Platforms without statfs are not guarded.
+const MIN_FREE_BYTES = (() => {
+    const n = parseInt(process.env.CHAT_UPLOAD_MIN_FREE_BYTES, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 1024 * 1024 * 1024;
+})();
+
+async function requireFreeSpace(req, res, next) {
+    let stats;
+    try {
+        stats = await fs.promises.statfs(UPLOAD_DIR);
+    } catch (_) {
+        return next();
+    }
+    if (stats.bavail * stats.bsize < MIN_FREE_BYTES + MAX_FILE_SIZE) {
+        return res.status(507).json({ success: false, error: 'Not enough disk space for attachments' });
+    }
+    return next();
+}
+
 function safeExtension(originalName) {
     const ext = path.extname(String(originalName || '')).toLowerCase();
     return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '';
@@ -78,7 +98,7 @@ router.get('/chat', requireAuth, (req, res) => {
 
 // Upload a chat attachment. Files are stored as sent: the browser does not
 // encrypt them, so anyone with server access can read them.
-router.post('/api/chat/upload', uploadLimiter, requireAuth, requirePermission('chat.access'), upload.single('file'), (req, res) => {
+router.post('/api/chat/upload', uploadLimiter, requireAuth, requirePermission('chat.access'), requireFreeSpace, upload.single('file'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ success: false, error: 'No file provided' });
     }
