@@ -19,6 +19,8 @@ const (
 	maxIDLen       = 32
 	maxHostnameLen = 256
 	maxFilesPerOp  = 100
+	// Strategy and group GUIDs are 36-character UUIDs, longer than a peer ID.
+	maxGUIDLen = 64
 )
 
 var (

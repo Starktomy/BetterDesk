@@ -39,7 +39,7 @@ func strategyPayload(st *db.Strategy, summary *db.StrategyAssignmentSummary) map
 
 // handleStrategiesGetByGUID returns one strategy with direct assignment summary.
 func (s *Server) handleStrategiesGetByGUID(w http.ResponseWriter, r *http.Request) {
-	guid := truncStr(r.PathValue("guid"), maxIDLen)
+	guid := truncStr(r.PathValue("guid"), maxGUIDLen)
 	if guid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "guid is required"})
 		return
@@ -76,7 +76,7 @@ func (s *Server) handleStrategiesAssign(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	strategyGUID := truncStr(body.Strategy, maxIDLen)
+	strategyGUID := truncStr(body.Strategy, maxGUIDLen)
 	if len(body.Peers) == 0 && len(body.Users) == 0 && len(body.Groups) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one target is required"})
 		return
@@ -131,7 +131,7 @@ func resolveStrategyRefs(resolver func(string) (string, error), refs []string, l
 // handleStrategiesStatus toggles strategy enabled flag. Body is raw JSON true/false.
 func (s *Server) handleStrategiesStatus(w http.ResponseWriter, r *http.Request) {
 	defer s.strategyCache.invalidate()
-	guid := truncStr(r.PathValue("guid"), maxIDLen)
+	guid := truncStr(r.PathValue("guid"), maxGUIDLen)
 	if guid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "guid is required"})
 		return
@@ -185,7 +185,7 @@ func (s *Server) handleProDevicesList(w http.ResponseWriter, r *http.Request) {
 // handleProDeviceAssign assigns metadata to a device (strategy_name, note, etc.).
 func (s *Server) handleProDeviceAssign(w http.ResponseWriter, r *http.Request) {
 	defer s.strategyCache.invalidate()
-	guid := truncStr(r.PathValue("guid"), maxIDLen)
+	guid := truncStr(r.PathValue("guid"), maxGUIDLen)
 	if guid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "guid is required"})
 		return

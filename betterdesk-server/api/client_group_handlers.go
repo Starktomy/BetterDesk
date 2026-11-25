@@ -185,7 +185,7 @@ func (s *Server) handleStrategiesPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	guid := truncStr(body.GUID, maxIDLen)
+	guid := truncStr(body.GUID, maxGUIDLen)
 	if guid != "" {
 		existing, err := s.db.GetStrategy(guid)
 		if err != nil {
@@ -198,8 +198,8 @@ func (s *Server) handleStrategiesPost(w http.ResponseWriter, r *http.Request) {
 		}
 		st := &db.Strategy{
 			Name:            body.Name,
-			UserGroupGUID:   truncStr(body.UserGroupGUID, maxIDLen),
-			DeviceGroupGUID: truncStr(body.DeviceGroupGUID, maxIDLen),
+			UserGroupGUID:   truncStr(body.UserGroupGUID, maxGUIDLen),
+			DeviceGroupGUID: truncStr(body.DeviceGroupGUID, maxGUIDLen),
 			Enabled:         enabled,
 			Permissions:     perms,
 		}
@@ -218,8 +218,8 @@ func (s *Server) handleStrategiesPost(w http.ResponseWriter, r *http.Request) {
 
 	st := &db.Strategy{
 		Name:            body.Name,
-		UserGroupGUID:   truncStr(body.UserGroupGUID, maxIDLen),
-		DeviceGroupGUID: truncStr(body.DeviceGroupGUID, maxIDLen),
+		UserGroupGUID:   truncStr(body.UserGroupGUID, maxGUIDLen),
+		DeviceGroupGUID: truncStr(body.DeviceGroupGUID, maxGUIDLen),
 		Enabled:         enabled,
 		Permissions:     perms,
 	}
@@ -233,7 +233,7 @@ func (s *Server) handleStrategiesPost(w http.ResponseWriter, r *http.Request) {
 // handleStrategiesDelete removes a strategy by GUID.
 func (s *Server) handleStrategiesDelete(w http.ResponseWriter, r *http.Request) {
 	defer s.strategyCache.invalidate()
-	guid := truncStr(r.PathValue("guid"), maxIDLen)
+	guid := truncStr(r.PathValue("guid"), maxGUIDLen)
 	if guid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "guid is required"})
 		return
