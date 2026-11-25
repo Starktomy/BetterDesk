@@ -4,7 +4,7 @@ const fs = require('fs');
 
 const PRIVILEGED_PORT_MAX = 1023;
 /** Linux capability.h — CAP_NET_BIND_SERVICE */
-const CAP_NET_BIND_SERVICE = 12;
+const CAP_NET_BIND_SERVICE = 10;
 const BIND_SERVICE_ENV = 'BETTERDESK_HAS_BIND_SERVICE';
 
 function isPrivilegedPort(port) {

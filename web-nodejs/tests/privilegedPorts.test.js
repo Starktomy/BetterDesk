@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+
 const {
     isPrivilegedPort,
     resolvePortForCurrentUser,
@@ -90,6 +92,7 @@ describe('privilegedPorts', () => {
     test('resolvePortForCurrentUser falls back for privileged ports when not root and no bind capability', () => {
         const originalGetuid = process.getuid;
         const originalEnv = process.env[BIND_SERVICE_ENV];
+        const readStatus = jest.spyOn(fs, 'readFileSync').mockReturnValue('CapEff:\t0000000000001000\n');
         process.getuid = () => 1000;
         delete process.env[BIND_SERVICE_ENV];
         try {
@@ -97,6 +100,7 @@ describe('privilegedPorts', () => {
             expect(resolvePortForCurrentUser(80, 5000, 'HTTP')).toBe(5000);
             expect(resolvePortForCurrentUser(5443, 5000, 'HTTPS')).toBe(5443);
         } finally {
+            readStatus.mockRestore();
             process.getuid = originalGetuid;
             if (originalEnv === undefined) {
                 delete process.env[BIND_SERVICE_ENV];
