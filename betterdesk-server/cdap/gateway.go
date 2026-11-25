@@ -39,6 +39,9 @@ type Gateway struct {
 	blocklist *security.Blocklist
 	jwt       *auth.JWTManager
 	limiter   *ratelimit.IPLimiter
+	// loginLimiter is shared with the REST login so one account has a single
+	// password-guess budget across both entry points.
+	loginLimiter *ratelimit.IPLimiter
 	// sessionGrantSigner binds passive Support Agent sessions to the
 	// authenticated CDAP operator and target device.
 	sessionGrantSigner *sessiongrant.Signer
@@ -131,6 +134,9 @@ func (g *Gateway) SetSessionGrantPrivateKey(key ed25519.PrivateKey) error {
 
 // SetRateLimiter overrides the default rate limiter.
 func (g *Gateway) SetRateLimiter(l *ratelimit.IPLimiter) { g.limiter = l }
+
+// SetLoginLimiter attaches the per-account password attempt limiter.
+func (g *Gateway) SetLoginLimiter(l *ratelimit.IPLimiter) { g.loginLimiter = l }
 
 // SetVersion sets the version string for startup log.
 func (g *Gateway) SetVersion(v string) { g.version = v }
@@ -244,7 +250,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 // CDAP protocol state machine.
 func (g *Gateway) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Extract client IP for rate limiting and logging
-	clientIP := extractIP(r)
+	clientIP := g.clientIP(r)
 
 	// Rate limit
 	if g.limiter != nil && !g.limiter.Allow(clientIP) {
@@ -634,22 +640,25 @@ func (g *Gateway) GetDeviceConn(deviceID string) *DeviceConn {
 	return val.(*DeviceConn)
 }
 
-// extractIP extracts the client IP from the request, respecting X-Forwarded-For
-// only when trust-proxy is configured (handled upstream in the HTTP handler).
-func extractIP(r *http.Request) string {
-	// Try X-Real-IP first (set by nginx)
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
-	}
-	// Try X-Forwarded-For
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
-	}
-	// Fall back to remote addr
+// clientIP returns the address used for rate limiting, the blocklist and the
+// audit log. Forwarded headers are client-controlled, so they are honored only
+// when the direct peer is a configured trusted proxy.
+func (g *Gateway) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if g.cfg == nil || !g.cfg.ShouldHonorForwardedHeaders(r.RemoteAddr) {
+		return host
+	}
+	if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
+		return ip.String()
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first, _, _ := strings.Cut(xff, ",")
+		if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+			return ip.String()
+		}
 	}
 	return host
 }

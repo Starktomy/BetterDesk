@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -14,6 +16,14 @@ import (
 	"github.com/unitronix/betterdesk-server/auth"
 	"github.com/unitronix/betterdesk-server/db"
 )
+
+var dummyPasswordHash = sync.OnceValue(func() string {
+	hash, err := auth.HashPassword("betterdesk-cdap-unknown-user")
+	if err != nil {
+		log.Printf("[cdap] dummy password hash unavailable: %v", err)
+	}
+	return hash
+})
 
 // handleAuth reads the initial "auth" message from the client, validates
 // credentials, and returns a DeviceConn on success.
@@ -120,11 +130,21 @@ func (g *Gateway) authUserPassword(p AuthPayload, clientIP string) (string, stri
 	if p.Username == "" || p.Password == "" {
 		return "", "", fmt.Errorf("username and password required")
 	}
+	// Same key as the REST login, so the per-IP limit cannot be multiplied by
+	// spreading guesses for one account across sources or entry points.
+	if g.loginLimiter != nil && !g.loginLimiter.Allow("user:"+strings.ToLower(p.Username)) {
+		g.auditAction("cdap_auth_ratelimited", clientIP, map[string]string{
+			"username": p.Username,
+			"method":   "user_password",
+		})
+		return "", "", fmt.Errorf("rate limit exceeded")
+	}
 
 	user, err := g.db.GetUser(p.Username)
 	if err != nil || user == nil {
-		// Timing-safe: always call VerifyPassword even for non-existent users
-		auth.VerifyPassword("dummy:hash", p.Password)
+		// Unknown users must cost the same PBKDF2 work as real ones, so the
+		// comparison needs a hash in the current format.
+		auth.VerifyPassword(dummyPasswordHash(), p.Password)
 		g.auditAction("cdap_auth_failed", clientIP, map[string]string{
 			"username": p.Username,
 			"reason":   "invalid credentials",

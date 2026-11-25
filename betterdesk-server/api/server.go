@@ -259,6 +259,9 @@ func (s *Server) SetKeyPair(kp *crypto.KeyPair) {
 // SetCDAPGateway sets the CDAP gateway for serving CDAP REST endpoints.
 func (s *Server) SetCDAPGateway(gw *cdap.Gateway) {
 	s.cdapGw = gw
+	if gw != nil {
+		gw.SetLoginLimiter(s.loginLimiter)
+	}
 }
 
 // SetMeshGateway sets the MeshCentral compatibility gateway.
