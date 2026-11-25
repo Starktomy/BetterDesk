@@ -696,6 +696,7 @@ async function startServer() {
 
         // Initialize Server Management terminal WebSocket (browser ↔ host shell)
         initServerTerminalProxy(server, sessionMiddleware, {
+            getUserById: (id) => db.getUserById(id),
             logAction: (...args) => {
                 void Promise.resolve().then(() => db.logAction(...args)).catch((err) => {
                     console.warn('[srv-term] audit log failed:', err.message);

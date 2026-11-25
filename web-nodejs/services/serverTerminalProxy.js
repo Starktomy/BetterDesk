@@ -14,7 +14,10 @@
  *
  * SECURITY:
  *   • Authentication via session cookie (express-session).
- *   • Authorization: only `super_admin` and `server_admin` may open a session.
+ *   • Authorization: only `super_admin` and `server_admin` (with the
+ *     server.config permission) may open a session. Open sessions are
+ *     rechecked every 30 s and end on logout, revocation, a role change or
+ *     15 minutes without input (SERVER_TERMINAL_IDLE_TIMEOUT_MS).
  *   • The shell runs as the user that owns the Node.js process — typically
  *     `betterdesk-console` (systemd) which has no sudo by default.
  *     Document this in the install scripts.
@@ -224,15 +227,44 @@ function startShell(cols, rows, userInfo) {
     return spawnPty(cols, rows, userInfo) || spawnFallback(cols, rows, userInfo);
 }
 
+const TERMINAL_ROLES = new Set(['super_admin', 'admin', 'server_admin']);
+const DEFAULT_IDLE_MS = 15 * 60 * 1000;
+const DEFAULT_REVALIDATE_MS = 30 * 1000;
+
+function positiveMs(value, fallback) {
+    const n = parseInt(value, 10);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * A shell on the host needs both a terminal role and server.config, so a
+ * permission override can take the terminal away from a role but never
+ * hand it to one outside the list.
+ */
+async function terminalAllowed(role) {
+    if (!TERMINAL_ROLES.has(role)) return false;
+    try {
+        const { roleHasEffectivePermission } = require('../middleware/auth');
+        return await roleHasEffectivePermission(role, 'server.config');
+    } catch (_) {
+        return false;
+    }
+}
+
 /**
  * Initialize the Server Management terminal WS proxy.
  * @param {import('http').Server} server
  * @param {Function} sessionMiddleware - Express session middleware
- * @param {{logAction?:Function}} [opts]
+ * @param {{logAction?:Function, getUserById?:Function, idleMs?:number, revalidateMs?:number}} [opts]
+ *   getUserById re-reads the operator's current role while the shell is open.
  */
 function initServerTerminalProxy(server, sessionMiddleware, opts) {
     const wss = new WebSocket.Server({ noServer: true });
     const audit = opts && typeof opts.logAction === 'function' ? opts.logAction : null;
+    const getUserById = opts && typeof opts.getUserById === 'function' ? opts.getUserById : null;
+    const idleMs = positiveMs(opts?.idleMs ?? process.env.SERVER_TERMINAL_IDLE_TIMEOUT_MS, DEFAULT_IDLE_MS);
+    const revalidateMs = positiveMs(opts?.revalidateMs, DEFAULT_REVALIDATE_MS);
+    const panelSessionService = require('./panelSessionService');
     const { enforceOrigin } = require('../middleware/wsOrigin');
     const { registerUpgradeHandler } = require('./wsUpgradeRouter');
 
@@ -241,7 +273,7 @@ function initServerTerminalProxy(server, sessionMiddleware, opts) {
         (pathname) => pathname === '/ws/server-management/terminal',
         (req, socket, head) => {
             if (!enforceOrigin(req, socket, 'server-management-terminal')) return;
-            sessionMiddleware(req, {}, () => {
+            sessionMiddleware(req, {}, async () => {
                 if (!req.session || !req.session.userId) {
                     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
                     return socket.destroy();
@@ -249,8 +281,7 @@ function initServerTerminalProxy(server, sessionMiddleware, opts) {
                 const sessUser = req.session.user || {};
                 const role = sessUser.role || req.session.role || '';
                 const username = sessUser.username || `user#${req.session.userId}`;
-                // RBAC: only super_admin / admin / server_admin
-                if (!(role === 'super_admin' || role === 'admin' || role === 'server_admin')) {
+                if (!(await terminalAllowed(role))) {
                     console.warn(`[srv-term] 403 upgrade rejected (user=${username} role=${role})`);
                     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
                     return socket.destroy();
@@ -258,7 +289,10 @@ function initServerTerminalProxy(server, sessionMiddleware, opts) {
                 req._smUserName = username;
                 req._smUserRole = role;
                 req._smUserId = req.session.userId;
-                req._smIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+                // X-Forwarded-For is client-controlled here; keep it for the
+                // audit details only.
+                req._smIp = req.socket.remoteAddress || '';
+                req._smForwardedFor = String(req.headers['x-forwarded-for'] || '').slice(0, 200);
                 wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
             });
         }
@@ -270,14 +304,55 @@ function initServerTerminalProxy(server, sessionMiddleware, opts) {
         const role = req._smUserRole;
         const userId = req._smUserId || null;
         const ip = req._smIp || '';
+        const forwardedFor = req._smForwardedFor ? ` xff=${req._smForwardedFor}` : '';
         let shell = null;
+        let closed = false;
+        let closeReason = 'client';
+        let activeSinceCheck = false;
+        let idleTimer = null;
 
         const send = (obj) => {
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
         };
 
+        // Logout, session revocation or a role change must end an open shell,
+        // not only stop new ones from opening.
+        const end = (reason) => {
+            if (closed) return;
+            closeReason = reason;
+            send({ type: 'end', reason });
+            try { ws.close(); } catch (_) { /* ignore */ }
+        };
+        const bumpIdle = () => {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => end('idle'), idleMs);
+        };
+        const revalidate = () => {
+            if (closed || !req.session || typeof req.session.reload !== 'function') return;
+            req.session.reload(async (err) => {
+                if (closed) return;
+                if (err || !req.session || req.session.userId !== userId) return end('session_ended');
+                let currentRole = req.session.user?.role || '';
+                if (getUserById) {
+                    const user = await Promise.resolve(getUserById(userId)).catch(() => null);
+                    currentRole = user?.role || '';
+                }
+                if (closed) return;
+                if (!(await terminalAllowed(currentRole))) return end('forbidden');
+                if (activeSinceCheck && !closed) {
+                    // Typing in the shell is panel activity: keep the session
+                    // from idling out while the operator is working.
+                    activeSinceCheck = false;
+                    if (!panelSessionService.touchActivity(req).ok) return end('session_ended');
+                    req.session.save(() => {});
+                }
+            });
+        };
+        const revalidateTimer = setInterval(revalidate, revalidateMs);
+        bumpIdle();
+
         if (audit) {
-            try { audit(userId, 'server_terminal_open', `session=${sessionId} role=${role}`, ip); } catch (_) { /* ignore */ }
+            try { audit(userId, 'server_terminal_open', `session=${sessionId} role=${role}${forwardedFor}`, ip); } catch (_) { /* ignore */ }
         }
         console.log(`[srv-term] session ${sessionId} opened by ${username}`);
 
@@ -287,8 +362,14 @@ function initServerTerminalProxy(server, sessionMiddleware, opts) {
             if (!msg || typeof msg !== 'object') return;
 
             if (!shell && msg.type !== 'init') return; // must init first
+            if (msg.type === 'init' || msg.type === 'input' || msg.type === 'resize') {
+                activeSinceCheck = true;
+                bumpIdle();
+            }
             switch (msg.type) {
                 case 'init': {
+                    // A second init would spawn another shell and orphan the first.
+                    if (shell) break;
                     const cols = Math.max(20, Math.min(500, parseInt(msg.cols, 10) || 80));
                     const rows = Math.max(5, Math.min(200, parseInt(msg.rows, 10) || 24));
                     const terminalUser = pickTerminalUser();
@@ -335,12 +416,15 @@ function initServerTerminalProxy(server, sessionMiddleware, opts) {
         });
 
         ws.on('close', () => {
+            closed = true;
+            clearTimeout(idleTimer);
+            clearInterval(revalidateTimer);
             if (shell) {
                 try { shell.kill(); } catch (_) { /* ignore */ }
             }
             ACTIVE_SESSIONS.delete(sessionId);
             if (audit) {
-                try { audit(userId, 'server_terminal_close', `session=${sessionId}`, ip); } catch (_) { /* ignore */ }
+                try { audit(userId, 'server_terminal_close', `session=${sessionId} reason=${closeReason}`, ip); } catch (_) { /* ignore */ }
             }
             console.log(`[srv-term] session ${sessionId} closed`);
         });
