@@ -32,6 +32,7 @@ jest.mock('../services/database', () => ({
     getAddressBook: jest.fn().mockResolvedValue({ data: '{}' }),
     saveAddressBook: jest.fn().mockResolvedValue(undefined),
     getDeviceGroupsForPeer: jest.fn().mockResolvedValue([]),
+    getDeviceGroupsForPeers: jest.fn().mockResolvedValue(new Map()),
     getDeviceGroupAccessForUser: jest.fn().mockResolvedValue([]),
     getUserGroupsForUser: jest.fn().mockResolvedValue([]),
     getAllDeviceGroups: jest.fn().mockResolvedValue([]),
@@ -100,11 +101,16 @@ describe('Devices Routes', () => {
                 { id: '987654321', hostname: 'PC-2', last_online: '2026-03-25T12:00:00Z' }
             ];
             serverBackend.getAllDevices.mockResolvedValue(mockDevices);
+            const group = { id: 1, name: 'Office' };
+            db.getDeviceGroupsForPeers.mockResolvedValueOnce(new Map([['123456789', [group]]]));
 
             const res = await request(app).get('/api/devices');
 
             expect(res.status).toBe(200);
-            expect(res.body.data.devices).toHaveLength(2);
+            expect(res.body.data.devices.map(device => device.groups)).toEqual([[group], []]);
+            expect(db.getDeviceGroupsForPeers).toHaveBeenCalledTimes(1);
+            expect(db.getDeviceGroupsForPeers).toHaveBeenCalledWith(['123456789', '987654321']);
+            expect(db.getDeviceGroupsForPeer).not.toHaveBeenCalled();
             expect(serverBackend.getAllDevices).toHaveBeenCalledWith(
                 expect.objectContaining({
                     sortBy: 'last_online',

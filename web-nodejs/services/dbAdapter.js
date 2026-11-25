@@ -77,6 +77,15 @@ function getPgDriver() {
     return _pg;
 }
 
+function groupMembershipsByPeer(rows) {
+    const byPeer = new Map();
+    for (const { member_peer_id: peerId, ...group } of rows) {
+        if (!byPeer.has(peerId)) byPeer.set(peerId, []);
+        byPeer.get(peerId).push(group);
+    }
+    return byPeer;
+}
+
 // ---------------------------------------------------------------------------
 //  Configuration
 // ---------------------------------------------------------------------------
@@ -565,6 +574,7 @@ function createSqliteAdapter(config) {
                 PRIMARY KEY (device_group_id, peer_id),
                 FOREIGN KEY (device_group_id) REFERENCES device_groups(id) ON DELETE CASCADE
             );
+            CREATE INDEX IF NOT EXISTS idx_device_group_members_peer ON device_group_members (peer_id);
             CREATE TABLE IF NOT EXISTS device_group_user_access (
                 device_group_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -3419,6 +3429,17 @@ function createSqliteAdapter(config) {
             `).all(peerId);
         },
 
+        async getDeviceGroupsForPeers(peerIds) {
+            if (peerIds.length === 0) return new Map();
+            const rows = openAuth().prepare(`
+                SELECT dgm.peer_id AS member_peer_id, dg.* FROM device_group_members dgm
+                INNER JOIN device_groups dg ON dg.id = dgm.device_group_id
+                WHERE dgm.peer_id IN (SELECT value FROM json_each(?))
+                ORDER BY dg.name ASC
+            `).all(JSON.stringify(peerIds));
+            return groupMembershipsByPeer(rows);
+        },
+
         async setDeviceGroupUserAccess(groupGuid, usernames = []) {
             const db = openAuth();
             const group = db.prepare('SELECT id FROM device_groups WHERE guid = ?').get(groupGuid);
@@ -4916,6 +4937,7 @@ function createPostgresAdapter() {
                 PRIMARY KEY (device_group_id, peer_id)
             )
         `);
+        await q('CREATE INDEX IF NOT EXISTS idx_device_group_members_peer ON device_group_members (peer_id)');
 
         await q(`
             CREATE TABLE IF NOT EXISTS device_group_user_access (
@@ -7158,6 +7180,17 @@ function createPostgresAdapter() {
                 WHERE dgm.peer_id = $1
                 ORDER BY dg.name ASC
             `, [peerId]);
+        },
+
+        async getDeviceGroupsForPeers(peerIds) {
+            if (peerIds.length === 0) return new Map();
+            const rows = await all(`
+                SELECT dgm.peer_id AS member_peer_id, dg.* FROM device_group_members dgm
+                INNER JOIN device_groups dg ON dg.id = dgm.device_group_id
+                WHERE dgm.peer_id = ANY($1::text[])
+                ORDER BY dg.name ASC
+            `, [peerIds]);
+            return groupMembershipsByPeer(rows);
         },
 
         async setDeviceGroupUserAccess(groupGuid, usernames = []) {

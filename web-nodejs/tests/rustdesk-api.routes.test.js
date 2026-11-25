@@ -14,6 +14,7 @@ jest.mock('../services/database', () => ({
     getAddressBookTags: jest.fn(),
     saveAddressBook: jest.fn(),
     getAllDeviceGroups: jest.fn(),
+    getDeviceGroupsForPeers: jest.fn().mockResolvedValue(new Map()),
     getDeviceGroupByGuid: jest.fn(),
     getDeviceGroupMembers: jest.fn()
 }));

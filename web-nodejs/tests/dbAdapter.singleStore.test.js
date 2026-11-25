@@ -37,4 +37,25 @@ describe('dbAdapter SQLite single-store topology', () => {
         expect(adapter.getSqliteAuthDb()).toBe(adapter.getSqliteMainDb());
         await adapter.close();
     });
+
+    it('loads group memberships for the requested peers in name order', async () => {
+        const { getAdapter } = require('../services/dbAdapter');
+        const adapter = getAdapter();
+        await adapter.init();
+        try {
+            const west = await adapter.createDeviceGroup({ name: 'West' });
+            const east = await adapter.createDeviceGroup({ name: 'East' });
+            await adapter.addDeviceToGroup(west.guid, 'peer-a');
+            await adapter.addDeviceToGroup(east.guid, 'peer-a');
+            await adapter.addDeviceToGroup(east.guid, 'peer-b');
+
+            const groups = await adapter.getDeviceGroupsForPeers(['peer-a', 'empty']);
+            expect([...groups.keys()]).toEqual(['peer-a']);
+            expect(groups.get('peer-a')).toEqual(await adapter.getDeviceGroupsForPeer('peer-a'));
+            expect(groups.get('peer-a').map(group => group.name)).toEqual(['East', 'West']);
+            await expect(adapter.getDeviceGroupsForPeers([])).resolves.toEqual(new Map());
+        } finally {
+            await adapter.close();
+        }
+    });
 });

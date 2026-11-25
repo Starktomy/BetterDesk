@@ -104,14 +104,13 @@ router.get('/api/devices', requireAuth, requirePermission('device.view'), async 
         let devices = await serverBackend.getAllDevices(filters);
         const scope = await deviceGroupService.getDeviceScopeForUser(db, req.session.user, devices);
         devices = deviceGroupService.filterDevicesByScope(devices, scope);
-        const aliasSource = await getLegacyAddressBookAliasMap(req);
+        const [aliasSource, groupsByPeer] = await Promise.all([
+            getLegacyAddressBookAliasMap(req),
+            db.getDeviceGroupsForPeers(devices.map(device => device.id)).catch(() => new Map())
+        ]);
         for (const device of devices) {
-            await enrichDeviceWithAddressBookAlias(req, device, aliasSource);
-            try {
-                device.groups = await db.getDeviceGroupsForPeer(device.id);
-            } catch (_) {
-                device.groups = [];
-            }
+            device.address_book_alias = aliasSource.aliases.get(String(device.id || '').trim()) || '';
+            device.groups = groupsByPeer.get(device.id) || [];
         }
         
         res.json({
@@ -144,8 +143,9 @@ router.get('/api/remote-targets', requireAuth, requirePermission('remote_target.
         });
         const scope = await deviceGroupService.getDeviceScopeForUser(db, req.session.user, targets);
         const visible = deviceGroupService.filterDevicesByScope(targets, scope);
+        const groupsByPeer = await db.getDeviceGroupsForPeers(visible.map(target => target.id)).catch(() => new Map());
         for (const target of visible) {
-            target.groups = await db.getDeviceGroupsForPeer(target.id).catch(() => []);
+            target.groups = groupsByPeer.get(target.id) || [];
         }
         res.json({ success: true, data: { targets: visible, total: visible.length } });
     } catch (err) {
