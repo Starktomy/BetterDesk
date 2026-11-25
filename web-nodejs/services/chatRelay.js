@@ -42,6 +42,10 @@ const log = {
 };
 
 const MAX_TEXT_BYTES = 8192;
+// Agent frames that name a conversation and are checked against it.
+const AGENT_CONVERSATION_FRAMES = new Set([
+    'message', 'typing', 'get_history', 'mark_read', 'key_exchange', 'read_receipt', 'file_share',
+]);
 const PING_INTERVAL = 30000;
 const HISTORY_LIMIT = 500; // in-memory fallback
 
@@ -225,19 +229,50 @@ function handleAgentConnection(ws, deviceId) {
         }
     });
 
+    // A device may use its own conversation ("operator" is the client's name
+    // for it) and the groups it belongs to. Any other ID would read or write
+    // another device's conversation with the operators.
+    let groupIds = null;
+    const refreshGroups = () => loadGroups(deviceId).then((data) => {
+        groupIds = new Set(((data && data.groups) || []).map((group) => String(group.id)));
+        return data;
+    });
+    const resolveConversation = async (requested) => {
+        const id = requested ? String(requested) : deviceId;
+        if (id === deviceId || id === 'operator') return deviceId;
+        if (!groupIds) await refreshGroups().catch(() => {});
+        return groupIds && groupIds.has(id) ? id : null;
+    };
+
     // Send groups
-    loadGroups(deviceId).then(data => {
+    refreshGroups().then(data => {
         if (data && data.groups) {
             sendTo(ws, { type: 'groups', groups: data.groups });
         }
-    });
+    }).catch(() => {});
 
     setupPing(ws);
 
+    // Frames run in order: a group lookup must not let a later frame overtake.
+    let frameQueue = Promise.resolve();
     ws.on('message', (data, isBinary) => {
         if (isBinary || data.length > MAX_TEXT_BYTES) return;
         let frame;
         try { frame = JSON.parse(data.toString()); } catch { return; }
+        frameQueue = frameQueue
+            .then(() => handleAgentFrame(frame))
+            .catch((err) => log.warn(`Agent frame from ${deviceId} failed: ${err.message}`));
+    });
+
+    async function handleAgentFrame(frame) {
+        let conversationId = null;
+        if (AGENT_CONVERSATION_FRAMES.has(frame.type)) {
+            conversationId = await resolveConversation(frame.conversation_id);
+            if (!conversationId) {
+                sendTo(ws, { type: 'error', error: 'conversation_not_allowed', conversation_id: frame.conversation_id });
+                return;
+            }
+        }
 
         switch (frame.type) {
             case 'hello':
@@ -256,7 +291,7 @@ function handleAgentConnection(ws, deviceId) {
                     id: Date.now(),
                     from: deviceId,
                     from_name: frame.from_name || deviceId,
-                    conversation_id: frame.conversation_id || 'operator',
+                    conversation_id: conversationId,
                     text: String(frame.text || '').slice(0, 2048),
                     timestamp: frame.timestamp || Date.now(),
                 };
@@ -272,7 +307,7 @@ function handleAgentConnection(ws, deviceId) {
                     const typing = {
                     type: 'typing',
                     from: deviceId,
-                    conversation_id: frame.conversation_id || 'operator',
+                    conversation_id: conversationId,
                     };
                     broadcast(room, typing, ws);
                     broadcastToPanelOperators(typing, ws, room);
@@ -280,7 +315,7 @@ function handleAgentConnection(ws, deviceId) {
                 break;
 
             case 'get_contacts':
-                loadContacts(frame.device_id || deviceId).then(data => {
+                loadContacts(deviceId).then(data => {
                     if (data && data.contacts && data.contacts.length > 0) {
                         sendTo(ws, { type: 'contacts', contacts: data.contacts });
                     } else {
@@ -290,7 +325,7 @@ function handleAgentConnection(ws, deviceId) {
                 break;
 
             case 'get_history':
-                loadHistory(frame.conversation_id || deviceId).then(data => {
+                loadHistory(conversationId).then(data => {
                     if (data && data.messages) {
                         sendTo(ws, {
                             type: 'history',
@@ -304,7 +339,7 @@ function handleAgentConnection(ws, deviceId) {
             case 'mark_read':
                 if (goApi && frame.conversation_id) {
                     goApi.post('/chat/read', {
-                        conversation_id: frame.conversation_id,
+                        conversation_id: conversationId,
                         reader_id: deviceId,
                     }).catch(() => {});
                 }
@@ -318,11 +353,11 @@ function handleAgentConnection(ws, deviceId) {
                         created_by: deviceId,
                     }).then(resp => {
                         sendTo(ws, { type: 'group_created', ...resp.data });
-                        loadGroups(deviceId).then(data => {
+                        refreshGroups().then(data => {
                             if (data && data.groups) {
                                 sendTo(ws, { type: 'groups', groups: data.groups });
                             }
-                        });
+                        }).catch(() => {});
                     }).catch(() => {});
                 }
                 break;
@@ -334,7 +369,7 @@ function handleAgentConnection(ws, deviceId) {
                     type: 'key_exchange',
                     from: deviceId,
                     public_key: frame.public_key,
-                    conversation_id: frame.conversation_id || deviceId,
+                    conversation_id: conversationId,
                     };
                     broadcast(room, keyExchange, ws);
                     broadcastToPanelOperators(keyExchange, ws, room);
@@ -348,7 +383,7 @@ function handleAgentConnection(ws, deviceId) {
                     type: 'read_receipt',
                     from: deviceId,
                     message_ids: frame.message_ids || [],
-                    conversation_id: frame.conversation_id || deviceId,
+                    conversation_id: conversationId,
                     timestamp: Date.now(),
                     };
                     broadcast(room, receipt, ws);
@@ -356,7 +391,7 @@ function handleAgentConnection(ws, deviceId) {
                 }
                 if (goApi && frame.conversation_id) {
                     goApi.post('/chat/read', {
-                        conversation_id: frame.conversation_id,
+                        conversation_id: conversationId,
                         reader_id: deviceId,
                         message_ids: frame.message_ids || [],
                     }).catch(() => {});
@@ -385,7 +420,7 @@ function handleAgentConnection(ws, deviceId) {
                     type: 'file_share',
                     from: deviceId,
                     from_name: frame.from_name || deviceId,
-                    conversation_id: frame.conversation_id || 'operator',
+                    conversation_id: conversationId,
                     file_id: frame.file_id || ('file_' + Date.now()),
                     file_name_encrypted: frame.file_name_encrypted || '',
                     file_size: frame.file_size || 0,
@@ -400,7 +435,7 @@ function handleAgentConnection(ws, deviceId) {
             default:
                 break;
         }
-    });
+    }
 
     ws.on('close', () => {
         if (room.agentWs === ws) {

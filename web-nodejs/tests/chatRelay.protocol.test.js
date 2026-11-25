@@ -268,4 +268,44 @@ describe('Chat Relay Protocol', () => {
         expect(keyExchange.operator).toBe('operator1');
         expect(keyExchange.conversation_id).toBe(deviceId);
     });
+
+    it('refuses agent frames for another device conversation', async () => {
+        const victim = nextDeviceId('VICTIM');
+        const deviceId = nextDeviceId();
+        const agent = await connect('/ws/chat/' + deviceId);
+
+        agent.send(JSON.stringify({ type: 'get_history', conversation_id: victim }));
+        const denied = await waitForMessage(agent, (msg) => msg.type === 'error');
+        expect(denied.error).toBe('conversation_not_allowed');
+        expect(goApi.get.mock.calls.some(([url]) => url.includes('/chat/history/' + victim))).toBe(false);
+
+        agent.send(JSON.stringify({ type: 'message', text: 'injected', conversation_id: victim }));
+        await waitForMessage(agent, (msg) => msg.type === 'error');
+        expect(goApi.post.mock.calls.some(([, body]) => body && body.conversation_id === victim)).toBe(false);
+    });
+
+    it('stores the support contact conversation under the device ID', async () => {
+        const deviceId = nextDeviceId();
+        const agent = await connect('/ws/chat/' + deviceId);
+
+        agent.send(JSON.stringify({ type: 'message', text: 'help', conversation_id: 'operator' }));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        const persisted = goApi.post.mock.calls.find(([url]) => url === '/chat/messages');
+        expect(persisted[1].conversation_id).toBe(deviceId);
+    });
+
+    it('allows agent frames for groups the device belongs to', async () => {
+        const deviceId = nextDeviceId();
+        goApi.get.mockImplementation(async (url) => {
+            if (url === '/chat/groups/' + encodeURIComponent(deviceId)) return { data: { groups: [{ id: 'grp-1' }] } };
+            if (url.startsWith('/chat/history/grp-1')) return { data: { messages: [{ id: 1, text: 'hi' }] } };
+            throw new Error('offline');
+        });
+        const agent = await connect('/ws/chat/' + deviceId);
+
+        agent.send(JSON.stringify({ type: 'get_history', conversation_id: 'grp-1' }));
+        const history = await waitForMessage(agent, (msg) => msg.type === 'history' && msg.conversation_id === 'grp-1');
+        expect(history.messages).toEqual([{ id: 1, text: 'hi' }]);
+    });
 });
